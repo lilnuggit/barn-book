@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import { HorseshoeMark } from "./icons";
 
 export function AuthShell({ children }: { children: ReactNode }) {
@@ -11,7 +11,16 @@ export function AuthShell({ children }: { children: ReactNode }) {
           <p className="text-sm text-header-ink-2">Your horses’ daily training log</p>
         </div>
       </div>
-      <div className="-mt-8 flex justify-center px-4">{children}</div>
+      <div className="-mt-8 flex justify-center px-4">
+        {/* Clerk's forms read the URL, which is only known at request time. */}
+        <Suspense
+          fallback={
+            <div className="h-[420px] w-full max-w-[400px] animate-pulse rounded-2xl bg-surface shadow-card ring-1 ring-line" />
+          }
+        >
+          {children}
+        </Suspense>
+      </div>
     </main>
   );
 }
