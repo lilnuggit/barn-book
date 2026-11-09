@@ -4,12 +4,19 @@ import { CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Copy, Loader2, Pl
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useOffline } from "next/offline";
-import { useEffect, useMemo, useOptimistic, useState, useTransition } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { EntryStatus } from "@/db/schema";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite, CopySuggestion, DayEntry, HorseLite } from "@/lib/data";
 import { addDays, daysBetween, formatLong, formatShort, isISODate, relativeDayName } from "@/lib/dates";
-import { forgetConfirmedBefore, run, useOverlayWrites, usePendingWrites, type OutboxItem } from "@/lib/sync";
+import {
+  forgetConfirmedBefore,
+  notePageChange,
+  run,
+  useOverlayWrites,
+  usePendingWrites,
+  type OutboxItem,
+} from "@/lib/sync";
 import { HorseshoeMark } from "../icons";
 import { headerButtonClass } from "../page-header";
 import { toast } from "../toast";
@@ -26,23 +33,6 @@ type Props = {
   activities: ActivityLite[];
   suggestions: CopySuggestion[];
 };
-
-type Patch = Partial<Pick<DayEntry, "status" | "note" | "activityIds">>;
-type Action =
-  | { type: "add"; entries: DayEntry[] }
-  | { type: "update"; id: string; patch: Patch }
-  | { type: "delete"; id: string };
-
-function reducer(state: DayEntry[], action: Action): DayEntry[] {
-  switch (action.type) {
-    case "add":
-      return [...state, ...action.entries.filter((e) => !state.some((s) => s.id === e.id))];
-    case "update":
-      return state.map((e) => (e.id === action.id ? { ...e, ...action.patch } : e));
-    case "delete":
-      return state.filter((e) => e.id !== action.id);
-  }
-}
 
 /** Layers changes still waiting on the phone over what the server sent. */
 function applyPending(entries: DayEntry[], pending: OutboxItem[], date: string): DayEntry[] {
@@ -74,11 +64,16 @@ function applyPending(entries: DayEntry[], pending: OutboxItem[], date: string):
   return out;
 }
 
-/** Entries with changes that are stuck on the phone (no signal, or the server didn't answer). */
+/**
+ * Entries with changes stuck on the phone: no signal, or the server didn't
+ * answer. Changes go strictly in order, so once one has failed, everything
+ * behind it is waiting too.
+ */
 function waitingEntryIds(pending: OutboxItem[], offline: boolean): Set<string> {
   const ids = new Set<string>();
+  const stuck = offline || pending.some((i) => i.attempts > 0);
+  if (!stuck) return ids;
   for (const item of pending) {
-    if (!offline && item.attempts === 0) continue;
     if (item.name === "addEntries") {
       for (const e of (item.meta as { entries?: DayEntry[] } | undefined)?.entries ?? []) ids.add(e.id);
     } else if (typeof item.args[0] === "string") {
@@ -96,12 +91,13 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
   const pending = usePendingWrites();
   const overlay = useOverlayWrites();
   const offline = useOffline();
-  const base = useMemo(() => applyPending(serverEntries, overlay, date), [serverEntries, overlay, date]);
+  // Changes show instantly: each one is stored on the phone the moment it's
+  // made, and the screen is drawn from the server's data plus those changes.
+  // (Deliberately no transition per save: a pending one would hold up every
+  // navigation, so with no signal the tabs and day arrows would stop working.)
+  const entries = useMemo(() => applyPending(serverEntries, overlay, date), [serverEntries, overlay, date]);
   // Fresh page data includes everything the server confirmed before it arrived.
   useEffect(() => forgetConfirmedBefore(Date.now()), [serverEntries]);
-  // Changes show instantly; they're saved on the phone and sent in order.
-  const [entries, applyOptimistic] = useOptimistic(base, reducer);
-  const [, startTransition] = useTransition();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -111,24 +107,19 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
     () => new Set(pending.filter((i) => i.name === "saveEntryNote").map((i) => i.args[0] as string)),
     [pending],
   );
-  // A "Repeat list" that hasn't reached the server yet: show it, and don't
-  // offer to add horses by hand meanwhile (that would add them twice).
-  const copying = pending.some((i) => i.name === "copyDay" && i.args[1] === date);
+  // A "Repeat list" that hasn't shown up yet (still waiting, or confirmed but
+  // the new list not loaded): show that, and don't offer to add horses by hand
+  // meanwhile (that would add them twice).
+  const copying = overlay.some((i) => i.name === "copyDay" && i.args[1] === date);
   const done = entries.filter((e) => e.status === "done").length;
 
-  function mutate(action: Action, send: () => Promise<SyncResult>): Promise<SyncResult> {
-    const result = send();
-    startTransition(async () => {
-      applyOptimistic(action);
-      report(await result);
-    });
+  function save(result: Promise<SyncResult>): Promise<SyncResult> {
+    void result.then(report);
     return result;
   }
 
   function setStatus(entry: DayEntry, status: EntryStatus) {
-    mutate({ type: "update", id: entry.id, patch: { status } }, () =>
-      run("setEntryStatus", [entry.id, status], { key: `status:${entry.id}` }),
-    );
+    save(run("setEntryStatus", [entry.id, status], { key: `status:${entry.id}` }));
     // Open the card after a check-off so the note box is right there.
     if (status === "done") setExpandedId(entry.id);
   }
@@ -140,9 +131,7 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
       if (!horse) return [];
       return [{ id, date, horseId, horseName: horse.name, horseColor: horse.color, status: "planned", activityIds, note }];
     });
-    mutate({ type: "add", entries: added }, () =>
-      run("addEntries", [{ date, items, activityIds, note }], { meta: { entries: added } }),
-    );
+    save(run("addEntries", [{ date, items, activityIds, note }], { meta: { entries: added } }));
   }
 
   return (
@@ -155,7 +144,11 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
             <Loader2 className="size-8 animate-spin text-brand" aria-hidden />
             <h2 className="mt-4 font-serif text-[22px] font-semibold">Copying the list…</h2>
             <p className="mt-1 text-[15px] text-ink-2">
-              {offline ? "It’s saved on this phone and will appear when you’re back online." : "Just a moment."}
+              {offline
+                ? "It’s saved on this phone and will appear when you’re back online."
+                : pending.some((i) => i.attempts > 0)
+                  ? "It’s saved on this phone and will appear once it syncs."
+                  : "Just a moment."}
             </p>
           </div>
         ) : entries.length === 0 ? (
@@ -180,20 +173,12 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
                 waiting={waiting.has(entry.id)}
                 noteSyncing={notesSyncing.has(entry.id)}
                 onStatus={(status) => setStatus(entry, status)}
-                onNote={(note) =>
-                  mutate({ type: "update", id: entry.id, patch: { note } }, () =>
-                    run("saveEntryNote", [entry.id, note], { key: `note:${entry.id}` }),
-                  )
-                }
+                onNote={(note) => save(run("saveEntryNote", [entry.id, note], { key: `note:${entry.id}` }))}
                 onActivities={(activityIds) =>
-                  mutate({ type: "update", id: entry.id, patch: { activityIds } }, () =>
-                    run("setEntryActivities", [entry.id, activityIds], { key: `activities:${entry.id}` }),
-                  )
+                  save(run("setEntryActivities", [entry.id, activityIds], { key: `activities:${entry.id}` }))
                 }
                 onRemove={() => {
-                  mutate({ type: "delete", id: entry.id }, () =>
-                    run("deleteEntry", [entry.id], { key: `delete:${entry.id}` }),
-                  );
+                  save(run("deleteEntry", [entry.id], { key: `delete:${entry.id}` }));
                   toast(`Removed ${entry.horseName}`);
                 }}
               />
@@ -288,7 +273,9 @@ function DayHeader({
             value={date}
             onClick={(e) => e.currentTarget.showPicker?.()}
             onChange={(e) => {
-              if (isISODate(e.target.value)) router.push(href(e.target.value));
+              if (!isISODate(e.target.value)) return;
+              notePageChange(href(e.target.value));
+              router.push(href(e.target.value));
             }}
             className="absolute inset-0 cursor-pointer opacity-0"
           />
@@ -341,7 +328,8 @@ function EmptyDay({
   onStart: () => void;
 }) {
   const [pendingDate, setPendingDate] = useState<string | null>(null);
-  const [isPending, startCopy] = useTransition();
+  // Only until the copy is queued: from then on DayView shows "Copying the list…".
+  const isPending = pendingDate !== null;
 
   if (!hasHorses) {
     return (
@@ -364,9 +352,11 @@ function EmptyDay({
   }
 
   function copyFrom(from: string) {
+    if (isPending) return;
     setPendingDate(from);
-    startCopy(async () => {
-      report(await run("copyDay", [from, date], { key: `copy:${date}` }));
+    void run("copyDay", [from, date], { key: `copy:${date}` }).then((result) => {
+      setPendingDate(null);
+      report(result);
     });
   }
 

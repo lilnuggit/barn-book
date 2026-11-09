@@ -1,53 +1,95 @@
 "use client";
 
-import { ArrowDown, ArrowUp, ChevronRight, Plus } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, CloudOff, Plus } from "lucide-react";
 import { useOffline } from "next/offline";
-import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite } from "@/lib/data";
 import { PALETTE } from "@/lib/palette";
-import { run } from "@/lib/sync";
+import { forgetConfirmedBefore, run, useOverlayWrites, type OutboxItem } from "@/lib/sync";
 import { ColorPicker } from "../color-picker";
 import { Sheet, SheetError } from "../sheet";
 import { toast } from "../toast";
 import { ActivityChip, cx, SectionTitle } from "../ui";
 
+// Every change here is stored on the phone first and shown straight away
+// (layered over the server's list), then sent in order with everything else.
+
 const inputClass =
   "w-full rounded-xl bg-surface-2 px-3.5 py-2.5 text-ink placeholder:text-ink-3 focus:bg-surface focus:ring-2 focus:ring-brand/50 focus:outline-none";
 
-function problem(result: SyncResult): string | null {
-  if (result.ok) return null;
-  if (result.reason === "invalid") return result.error;
-  if (result.reason === "failed") return "Couldn’t reach the server — please try again.";
-  return null; // signed out: the app is taking you to sign in
+const SAVED_ON_PHONE = "Saved on this phone — it’ll sync when it can";
+const SAVED_OFFLINE = "No signal — saved on this phone, it’ll sync when you’re back online";
+const PENDING_PREFIX = "pending:";
+
+function report(result: SyncResult, done?: string) {
+  if (result.ok) {
+    if (done) toast(done);
+  } else if (result.reason === "invalid") {
+    toast(result.error);
+  }
 }
 
-export function ActivityManager({ activities }: { activities: ActivityLite[] }) {
+/** Layers work-type changes still waiting on the phone over the server's list. */
+function applyPending(list: ActivityLite[], pending: OutboxItem[]): ActivityLite[] {
+  let out = list;
+  for (const item of pending) {
+    const [first, second] = item.args as [unknown, unknown];
+    switch (item.name) {
+      case "updateActivityType": {
+        const p = first as { id: string; name: string; color: string };
+        out = out.map((a) => (a.id === p.id ? { ...a, name: p.name.trim() || a.name, color: p.color } : a));
+        break;
+      }
+      case "setActivityArchived":
+        out = out.map((a) => (a.id === first ? { ...a, archived: second as boolean } : a));
+        break;
+      case "reorderActivityTypes": {
+        const rank = new Map((first as string[]).map((id, i) => [id, i]));
+        out = [...out].sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));
+        break;
+      }
+      case "createActivityType": {
+        const p = first as { name: string; color: string };
+        const name = p.name.trim();
+        const match = out.find((a) => a.name.toLowerCase() === name.toLowerCase());
+        if (match) {
+          // An archived one with that name comes back (that's what the server
+          // does); an active one stays as it is (the server will say so).
+          if (match.archived) out = out.map((a) => (a === match ? { ...a, archived: false, color: p.color } : a));
+        } else {
+          out = [...out, { id: `${PENDING_PREFIX}${item.id}`, name, color: p.color, archived: false }];
+        }
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+export function ActivityManager({ activities: serverActivities }: { activities: ActivityLite[] }) {
+  const overlay = useOverlayWrites();
+  const activities = useMemo(() => applyPending(serverActivities, overlay), [serverActivities, overlay]);
+  useEffect(() => forgetConfirmedBefore(Date.now()), [serverActivities]);
   const active = activities.filter((a) => !a.archived);
   const archived = activities.filter((a) => a.archived);
-  const [ordered, setOrdered] = useOptimistic(active);
+  // Ones added but not synced yet can't be moved (they have no id yet).
+  const movable = active.filter((a) => !a.id.startsWith(PENDING_PREFIX));
   const [reordering, setReordering] = useState(false);
-  const [editing, setEditing] = useState<ActivityLite | null>(null);
-  const [, startTransition] = useTransition();
+  const [editing, setEditing] = useState<string | null>(null);
 
-  function move(index: number, by: -1 | 1) {
-    const next = [...ordered];
-    const [item] = next.splice(index, 1);
-    next.splice(index + by, 0, item!);
-    startTransition(async () => {
-      setOrdered(next);
-      const message = problem(await run("reorderActivityTypes", [next.map((a) => a.id)], { persist: false }));
-      if (message) toast(message);
-    });
+  function move(id: string, by: -1 | 1) {
+    const next = [...movable];
+    const at = next.findIndex((a) => a.id === id);
+    const [item] = next.splice(at, 1);
+    next.splice(Math.max(0, Math.min(next.length, at + by)), 0, item!);
+    void run("reorderActivityTypes", [next.map((a) => a.id)], { key: "activity-order" }).then((r) => report(r));
   }
 
   function restore(a: ActivityLite) {
-    startTransition(async () => {
-      const result = await run("setActivityArchived", [a.id, false], { persist: false });
-      const message = problem(result);
-      if (message) toast(message);
-      else if (result.ok) toast(`${a.name} is back on the list`);
-    });
+    void run("setActivityArchived", [a.id, false], { key: `activity-archive:${a.id}` }).then((r) =>
+      report(r, `${a.name} is back on the list`),
+    );
   }
 
   return (
@@ -66,46 +108,57 @@ export function ActivityManager({ activities }: { activities: ActivityLite[] }) 
         Types of work
       </SectionTitle>
       <ul className="overflow-hidden rounded-2xl bg-surface shadow-card ring-1 ring-line">
-        {ordered.map((a, i) => (
-          <li key={a.id} className="flex items-center border-b border-line last:border-b-0">
-            {reordering ? (
-              <div className="flex w-full items-center justify-between py-1 pr-1 pl-4">
-                <ActivityChip name={a.name} color={a.color} size="md" />
-                <div className="flex">
-                  <button
-                    type="button"
-                    aria-label={`Move ${a.name} up`}
-                    disabled={i === 0}
-                    onClick={() => move(i, -1)}
-                    className="grid size-11 place-items-center rounded-full text-ink-2 disabled:opacity-25"
-                  >
-                    <ArrowUp className="size-5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Move ${a.name} down`}
-                    disabled={i === ordered.length - 1}
-                    onClick={() => move(i, 1)}
-                    className="grid size-11 place-items-center rounded-full text-ink-2 disabled:opacity-25"
-                  >
-                    <ArrowDown className="size-5" />
-                  </button>
+        {active.map((a) => {
+          const waiting = a.id.startsWith(PENDING_PREFIX);
+          const place = movable.indexOf(a);
+          return (
+            <li key={a.id} className="flex items-center border-b border-line last:border-b-0">
+              {waiting ? (
+                <div className="flex w-full items-center justify-between px-4 py-3">
+                  <ActivityChip name={a.name} color={a.color} size="md" />
+                  <span className="flex items-center gap-1 text-xs font-medium text-ink-3">
+                    <CloudOff className="size-3.5" aria-hidden /> Not synced yet
+                  </span>
                 </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setEditing(a)}
-                className="flex w-full items-center justify-between px-4 py-3 text-left active:bg-surface-2"
-              >
-                <ActivityChip name={a.name} color={a.color} size="md" />
-                <ChevronRight className="size-5 text-ink-3" aria-hidden />
-              </button>
-            )}
-          </li>
-        ))}
+              ) : reordering ? (
+                <div className="flex w-full items-center justify-between py-1 pr-1 pl-4">
+                  <ActivityChip name={a.name} color={a.color} size="md" />
+                  <div className="flex">
+                    <button
+                      type="button"
+                      aria-label={`Move ${a.name} up`}
+                      disabled={place === 0}
+                      onClick={() => move(a.id, -1)}
+                      className="grid size-11 place-items-center rounded-full text-ink-2 disabled:opacity-25"
+                    >
+                      <ArrowUp className="size-5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Move ${a.name} down`}
+                      disabled={place === movable.length - 1}
+                      onClick={() => move(a.id, 1)}
+                      className="grid size-11 place-items-center rounded-full text-ink-2 disabled:opacity-25"
+                    >
+                      <ArrowDown className="size-5" />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setEditing(a.id)}
+                  className="flex w-full items-center justify-between px-4 py-3 text-left active:bg-surface-2"
+                >
+                  <ActivityChip name={a.name} color={a.color} size="md" />
+                  <ChevronRight className="size-5 text-ink-3" aria-hidden />
+                </button>
+              )}
+            </li>
+          );
+        })}
         <li>
-          <AddActivityRow nextColor={PALETTE[ordered.length % PALETTE.length]} />
+          <AddActivityRow nextColor={PALETTE[active.length % PALETTE.length]} />
         </li>
       </ul>
       <p className="mt-2 px-1 text-sm text-ink-3">
@@ -132,27 +185,31 @@ export function ActivityManager({ activities }: { activities: ActivityLite[] }) 
         </div>
       )}
 
-      <EditActivitySheet activity={editing} onClose={() => setEditing(null)} />
+      <EditActivitySheet
+        activity={activities.find((a) => a.id === editing) ?? null}
+        onClose={() => setEditing(null)}
+      />
     </section>
   );
 }
 
 function AddActivityRow({ nextColor }: { nextColor: string }) {
+  const offline = useOffline();
   const [name, setName] = useState("");
-  const [isPending, startTransition] = useTransition();
 
   function add() {
     const trimmed = name.trim();
-    if (!trimmed || isPending) return;
-    startTransition(async () => {
-      const result = await run("createActivityType", [{ name: trimmed, color: nextColor }], { persist: false });
-      const message = problem(result);
-      if (message) return toast(message);
-      if (result.ok) {
-        // Keep anything typed since tapping Add.
-        setName((n) => (n.trim() === trimmed ? "" : n));
-        toast(`Added ${trimmed}`);
-      }
+    if (!trimmed) return;
+    // Clearing the box is what stops a double tap from adding it twice (and
+    // the same name again replaces the copy waiting to go out).
+    const sending = run("createActivityType", [{ name: trimmed, color: nextColor }], {
+      key: `activity-new:${trimmed.toLowerCase()}`,
+    });
+    setName(""); // it shows in the list straight away
+    if (offline) toast(`${trimmed}: ${SAVED_OFFLINE.toLowerCase()}`);
+    void sending.then((result) => {
+      if (result.ok) toast(`Added ${trimmed}`);
+      else if (result.reason === "invalid") toast(result.error);
     });
   }
 
@@ -177,7 +234,7 @@ function AddActivityRow({ nextColor }: { nextColor: string }) {
       />
       <button
         type="submit"
-        disabled={!name.trim() || isPending}
+        disabled={!name.trim()}
         className={cx(
           "min-h-11 rounded-full px-3 text-[15px] font-semibold text-brand transition-opacity",
           !name.trim() && "opacity-0",
@@ -195,18 +252,21 @@ function EditActivitySheet({ activity, onClose }: { activity: ActivityLite | nul
   const [color, setColor] = useState("slate");
   const [error, setError] = useState<string | null>(null);
   const [shownId, setShownId] = useState<string | null>(null);
-  // Each opening is a session; a save that lands after its sheet closed
-  // must not close or change the one that's open now.
+  const [startedFrom, setStartedFrom] = useState({ name: "", color: "slate" });
+  // Each opening is a session; a save that lands after its sheet closed must
+  // not close or change the one that's open now.
   const [openSession, setOpenSession] = useState(0);
   const [busySession, setBusySession] = useState<number | null>(null);
   const session = useRef(0);
   const busy = busySession !== null && busySession === openSession;
 
-  // Start from the tapped work type each time the sheet opens.
+  // Start from the tapped work type (including any change not synced yet)
+  // each time the sheet opens.
   if (activity && activity.id !== shownId) {
     setShownId(activity.id);
     setName(activity.name);
     setColor(activity.color);
+    setStartedFrom({ name: activity.name, color: activity.color });
     setError(null);
     setOpenSession((n) => n + 1);
   }
@@ -218,42 +278,47 @@ function EditActivitySheet({ activity, onClose }: { activity: ActivityLite | nul
     session.current = openSession;
   }, [openSession]);
 
-  const dirty = activity !== null && (name !== activity.name || color !== activity.color);
+  const dirty = activity !== null && (name !== startedFrom.name || color !== startedFrom.color);
 
   function close() {
-    if (busy) {
-      toast(offline ? "No signal — your changes will save when you’re back online" : "Still saving your changes…");
-    }
+    if (busy) toast(SAVED_ON_PHONE);
     onClose();
   }
 
-  function submit(call: () => Promise<SyncResult>, done?: string) {
-    if (busy) return;
+  function submit(sending: Promise<SyncResult>, done?: string) {
+    if (offline) {
+      onClose();
+      toast(SAVED_OFFLINE);
+      return;
+    }
     const s = openSession;
     setBusySession(s);
-    void call().then((result) => {
+    void sending.then((result) => {
       setBusySession((b) => (b === s ? null : b));
       const stillOpen = s === session.current;
-      const message = problem(result);
-      if (message) {
-        if (stillOpen) setError(message);
-        else toast(message);
+      if (!result.ok && result.reason === "invalid") {
+        if (stillOpen) setError(result.error);
+        else toast(result.error);
         return;
       }
-      if (!result.ok) return;
-      if (done) toast(done);
+      if (!result.ok && result.reason === "signed-out") return; // the app is going to sign-in
       if (stillOpen) onClose();
+      if (!result.ok) toast(SAVED_ON_PHONE);
+      else if (done) toast(done);
     });
   }
 
   function save() {
-    if (!activity || !name.trim()) return;
-    submit(() => run("updateActivityType", [{ id: activity.id, name, color }], { persist: false }));
+    if (!activity || !name.trim() || busy) return;
+    submit(run("updateActivityType", [{ id: activity.id, name, color }], { key: `activity-edit:${activity.id}` }));
   }
 
   function archive() {
-    if (!activity) return;
-    submit(() => run("setActivityArchived", [activity.id, true], { persist: false }), `${activity.name} archived`);
+    if (!activity || busy) return;
+    submit(
+      run("setActivityArchived", [activity.id, true], { key: `activity-archive:${activity.id}` }),
+      `${activity.name} archived`,
+    );
   }
 
   return (

@@ -66,7 +66,8 @@ function TabBarView({ active }: { active: string | null | undefined }) {
 function SyncStatus() {
   const offline = useOffline();
   const pending = usePendingWrites();
-  const stuck = pending.filter((i) => i.attempts > 0).length;
+  // Changes go strictly in order: once one has failed, everything behind it waits too.
+  const stuck = pending.some((i) => i.attempts > 0) ? pending.length : 0;
 
   if (!offline && stuck === 0) return null;
   return (

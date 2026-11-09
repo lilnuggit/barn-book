@@ -18,10 +18,12 @@ note. Nothing gets deleted, so you can look back at what any horse did and when.
 - **Settings**: add, rename, recolor, reorder, or archive types of work.
   Download the training log, or every horse with its About notes, as CSV.
 
-Losing signal at the barn is fine: every change is saved on the phone first and
-sent when there's a connection, in the order it was made, even if iOS closes the
-app in between. A strip above the tabs says when changes are still waiting. (The
-app does need signal to open from scratch.)
+Losing signal at the barn is fine: every change (check-offs, notes, horses, types
+of work) is saved on the phone first and sent when there's a connection, in the
+order it was made, even if iOS closes the app in between. A strip above the tabs
+says when changes are still waiting. You can still switch screens with no signal;
+anything not loaded yet fills in once it's back. (The app does need signal to
+open from scratch.)
 
 ## Stack
 

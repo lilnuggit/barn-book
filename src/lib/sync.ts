@@ -36,8 +36,8 @@ import type { ActionResult, SyncResult } from "./action-result";
  *    can't be reached that's treated as "try again later", not "signed out";
  *  - tied to the account that made it, so it's never sent to another one.
  *
- * Settings edits pass persist: false: they're sent in the same order but not
- * stored on the phone.
+ * Only the page reload (refreshPage) passes persist: false: it changes
+ * nothing, so it goes through the same line but isn't stored on the phone.
  */
 
 const ACTIONS = {
@@ -77,8 +77,15 @@ export type OutboxItem = {
 type RunOptions = {
   key?: string;
   meta?: unknown;
-  /** Keep on the phone until it succeeds (default). Settings edits pass false. */
+  /** Keep on the phone until it succeeds (default). Only the page reload passes false. */
   persist?: boolean;
+  /**
+   * Called once the change has been handed to the server, or once it's clear
+   * it won't be right now. To change page because of a save, do it from here:
+   * a page change started before the save is handed over would wait for the
+   * server's answer (see "page changes" below); one started after doesn't.
+   */
+  onSend?: () => void;
 };
 
 const STORAGE_KEY = "barnbook:outbox:v1";
@@ -105,6 +112,12 @@ function currentUser(): string | null | undefined {
   const c = clerk();
   if (!c?.loaded) return undefined;
   return c.user?.id ?? null;
+}
+
+/** Clerk has loaded and is sure nobody is signed in (not just unable to check). */
+function clerkSaysSignedOut() {
+  const c = clerk();
+  return usesClerk() && Boolean(c?.loaded) && !c?.user && (c?.status === "ready" || c?.status === undefined);
 }
 
 function isMine(item: OutboxItem, me: string | null | undefined = currentUser()) {
@@ -245,19 +258,70 @@ function remember(item: OutboxItem) {
   const at = Date.now();
   recent = [...recent, { item, at }];
   emit();
-  // In case that page never refreshes (e.g. the user moved on).
-  setTimeout(() => {
+  // Normally the page's fresh data arrives first (forgetConfirmedBefore). This
+  // is a fallback in case that page never refreshes — but not while the queue
+  // is still working, because Next applies new page data at the end of a burst.
+  const expire = () => {
+    if (stored().some((i) => isMine(i)) || transient.size > 0 || started.size > 0) {
+      setTimeout(expire, 5_000);
+      return;
+    }
     const next = recent.filter((r) => r.item.id !== item.id);
     if (next.length !== recent.length) {
       recent = next;
       emit();
     }
-  }, 15_000);
+  };
+  setTimeout(expire, 15_000);
 }
 
 /** Drops these unsent changes (after the user chose to sign out without them). */
 export function discard(ids: string[]) {
   commit(stored().filter((i) => !ids.includes(i.id)));
+}
+
+// ---------- page changes ----------
+
+/*
+ * Next runs page changes and saves one after the other and shows the result
+ * of whichever started last. So a save handed over while a page is still
+ * loading holds that page back until the server answers the save, which with
+ * a weak signal can take a long time. Before sending anything, the queue lets
+ * a page change that's under way land first (waiting a few seconds at most).
+ */
+
+let movingTo: { url: string; since: number } | null = null;
+let watchingPageChanges = false;
+
+function isCurrentPage(url: string) {
+  const to = new URL(url, window.location.href);
+  return to.pathname === window.location.pathname && to.search === window.location.search;
+}
+
+/** Call when the app starts a page change itself (router.push / replace). */
+export function notePageChange(url: string) {
+  if (typeof window === "undefined" || isCurrentPage(url)) return;
+  movingTo = { url: new URL(url, window.location.href).href, since: Date.now() };
+}
+
+/** Links: by the time a click bubbles up to the document, Next has claimed the ones it navigates. */
+function watchPageChanges() {
+  if (watchingPageChanges || typeof document === "undefined") return;
+  watchingPageChanges = true;
+  document.addEventListener("click", (e) => {
+    if (!e.defaultPrevented || !(e.target instanceof Element)) return;
+    const link = e.target.closest("a[href]");
+    if (!(link instanceof HTMLAnchorElement) || link.hasAttribute("download")) return;
+    if (link.origin !== window.location.origin || (link.target && link.target !== "_self")) return;
+    notePageChange(link.href);
+  });
+}
+
+async function pageChangeLanded(ms = 15_000) {
+  while (movingTo && !isCurrentPage(movingTo.url) && Date.now() - movingTo.since < ms) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  movingTo = null;
 }
 
 // ---------- sending, one at a time ----------
@@ -268,12 +332,13 @@ let blocked = false;
 const scheduled = new Set<string>();
 const started = new Set<string>();
 const waiters = new Map<string, (result: SyncResult) => void>();
+const sendHooks = new Map<string, () => void>();
 const transient = new Map<string, OutboxItem>();
 
 export function run<N extends ActionName>(
   name: N,
   args: Parameters<(typeof ACTIONS)[N]>,
-  { key, meta, persist = true }: RunOptions = {},
+  { key, meta, persist = true, onSend }: RunOptions = {},
 ): Promise<SyncResult> {
   const item: OutboxItem = {
     id: crypto.randomUUID(),
@@ -285,7 +350,9 @@ export function run<N extends ActionName>(
     attempts: 0,
     userId: currentUser() ?? null,
   };
+  watchPageChanges();
   const done = new Promise<SyncResult>((resolve) => waiters.set(item.id, resolve));
+  if (onSend) sendHooks.set(item.id, onSend);
 
   if (persist) {
     let next = stored();
@@ -304,8 +371,47 @@ export function run<N extends ActionName>(
 
 /** Sends anything still waiting on the phone (after a restart, reconnect, or resume). */
 export function replay() {
+  watchPageChanges();
   blocked = false;
   for (const item of stored()) schedule(item.id);
+  sendRefresh();
+}
+
+/** Reloading the current page's data is wanted but hasn't gone through yet. */
+let refreshWanted = false;
+let refreshing = false;
+
+/**
+ * Reloads the current page's data (e.g. the app was left open overnight). Goes
+ * through the queue, so an expired sign-in is renewed first, and keeps trying
+ * until it works. Any successful save also does it, since saves refresh the page.
+ */
+export function refreshWhenPossible() {
+  refreshWanted = true;
+  sendRefresh();
+}
+
+function sendRefresh() {
+  if (!refreshWanted || refreshing) return;
+  refreshing = true;
+  void run("refreshPage", [], { persist: false }).then((result) => {
+    refreshing = false;
+    if (result.ok) refreshWanted = false;
+    else if (result.reason === "failed") scheduleRetry();
+  });
+}
+
+let clerkWatch: ReturnType<typeof setInterval> | undefined;
+
+/** Sign-in is still loading: go again the moment it's ready (no back-off). */
+function replayWhenClerkLoads() {
+  if (clerkWatch) return;
+  clerkWatch = setInterval(() => {
+    if (!clerk()?.loaded) return;
+    clearInterval(clerkWatch);
+    clerkWatch = undefined;
+    replay();
+  }, 300);
 }
 
 function schedule(id: string) {
@@ -315,20 +421,31 @@ function schedule(id: string) {
 }
 
 function settle(id: string, result: SyncResult) {
+  sent(id);
   waiters.get(id)?.(result);
   waiters.delete(id);
 }
 
+function sent(id: string) {
+  const hook = sendHooks.get(id);
+  sendHooks.delete(id);
+  hook?.();
+}
+
 async function send(item: OutboxItem): Promise<ActionResult> {
+  await pageChangeLanded();
   const action = ACTIONS[item.name] as (...args: unknown[]) => Promise<ActionResult>;
-  const result = await action(...item.args);
+  const reply = action(...item.args); // hands it to the router straight away
+  sent(item.id);
+  const result = await reply;
   if (!result || typeof result.ok !== "boolean") throw new Error(`Unexpected reply from ${item.name}`);
   return result;
 }
 
 /** After a change didn't go through: drop it if a newer change replaces it, else hold the queue. */
 function hold(item: OutboxItem) {
-  if (item.key !== undefined && stored().some((i) => i.key === item.key && i.id !== item.id)) {
+  const sameAccount = (i: OutboxItem) => (i.userId ?? null) === (item.userId ?? null);
+  if (item.key !== undefined && stored().some((i) => i.key === item.key && i.id !== item.id && sameAccount(i))) {
     commit(stored().filter((i) => i.id !== item.id));
     return;
   }
@@ -346,15 +463,42 @@ async function process(id: string): Promise<void> {
   }
 
   if (!isTransient) {
-    if (item.userId) await waitForClerk();
-    const me = currentUser();
-    if (!isMine(item, me)) {
-      // Made while signed in to another account: it waits for that account.
+    if (blocked) {
+      // Something older is waiting for its retry; this goes after it.
       scheduled.delete(id);
       settle(id, { ok: false, reason: "failed" });
       return;
     }
-    if (blocked) {
+    if (item.userId && currentUser() === undefined) {
+      await waitForClerk(); // usually just a moment after the page loads
+      if (currentUser() === undefined) {
+        // Sign-in still loading: hold everything, in order, and go again as
+        // soon as it's ready. Not a failure, so no back-off.
+        blocked = true;
+        scheduled.delete(id);
+        settle(id, { ok: false, reason: "failed" });
+        replayWhenClerkLoads();
+        return;
+      }
+    }
+    const me = currentUser();
+    if (item.userId && me === null && usesClerk()) {
+      // Nobody is signed in now (the weekly sign-in ran out, or signed out on
+      // another device). Everything stays on the phone, in order, and goes
+      // out once the rider signs back in.
+      blocked = true;
+      scheduled.delete(id);
+      if (clerkSaysSignedOut()) {
+        settle(id, { ok: false, reason: "signed-out" });
+        goToSignIn();
+      } else {
+        settle(id, { ok: false, reason: "failed" });
+        scheduleRetry();
+      }
+      return;
+    }
+    if (!isMine(item, me)) {
+      // Made while signed in to another account: it waits for that account.
       scheduled.delete(id);
       settle(id, { ok: false, reason: "failed" });
       return;
@@ -370,7 +514,6 @@ async function process(id: string): Promise<void> {
 
   started.add(id);
   try {
-    if (item.userId && currentUser() === undefined) throw new Error("Sign-in isn't ready yet");
     await renewSession();
     let result = await send(item);
     let renewal: Renewal = "renewed";
@@ -394,7 +537,10 @@ async function process(id: string): Promise<void> {
       transient.delete(id);
     } else {
       commit(stored().filter((i) => i.id !== id));
-      if (result.ok) remember(item);
+      if (result.ok) {
+        remember(item);
+        refreshWanted = false; // saves refresh the page too
+      }
     }
     settle(id, result);
   } catch (error) {
@@ -417,7 +563,7 @@ async function process(id: string): Promise<void> {
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function scheduleRetry() {
-  if (retryTimer || stored().length === 0) return;
+  if (retryTimer || (stored().length === 0 && !refreshWanted)) return;
   const attempts = Math.max(1, ...stored().map((i) => i.attempts));
   const wait = Math.min(15_000 * 2 ** (attempts - 1), 5 * 60_000);
   retryTimer = setTimeout(() => {
@@ -429,7 +575,8 @@ function scheduleRetry() {
 let leaving = false;
 
 function goToSignIn() {
-  if (leaving) return;
+  // Already there (a timer can still fire after a client-side sign-out).
+  if (leaving || /^\/sign-(in|up)(\/|$)/.test(window.location.pathname)) return;
   leaving = true;
   // A full page load on purpose: it lets Clerk run its sign-in handshake,
   // which a client-side navigation can't.

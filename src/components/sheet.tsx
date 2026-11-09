@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 
 /**
  * iOS-style bottom sheet built on <dialog>, so focus and Escape work for free.
@@ -41,13 +41,26 @@ export function Sheet({
   busy?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const openRef = useRef(open);
 
   useEffect(() => {
+    openRef.current = open;
     const dialog = ref.current;
     if (!dialog) return;
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
   }, [open]);
+
+  // A modal <dialog> blocks the whole page. If this sheet's screen is hidden
+  // (Next keeps recent screens mounted but hidden) or removed while it's open,
+  // close it so it can't linger as an invisible layer that swallows every tap.
+  // It reopens when the screen shows again, since effects re-run then.
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    return () => {
+      if (dialog?.open) dialog.close();
+    };
+  }, []);
 
   function requestClose() {
     if (dirty && !busy && !window.confirm("Discard your changes?")) return;
@@ -61,7 +74,11 @@ export function Sheet({
       ref={ref}
       className="sheet shadow-2xl"
       aria-label={title}
-      onClose={onClose}
+      onClose={() => {
+        // Fired after every close, including ours; only report closes the
+        // parent doesn't know about yet (so it isn't told twice).
+        if (openRef.current) onClose();
+      }}
       onCancel={(e) => {
         e.preventDefault(); // Escape: same rules as Cancel
         requestClose();

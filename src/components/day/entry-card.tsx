@@ -95,7 +95,7 @@ export function EntryCard({
 
       {expanded && (
         <div className="space-y-4 border-t border-line px-4 pt-3 pb-4">
-          <NoteField initial={entry.note} syncing={noteSyncing} onSave={onNote} />
+          <NoteField initial={entry.note} syncing={noteSyncing} stuck={waiting} onSave={onNote} />
 
           <WorkEditor entry={entry} activities={activities} onActivities={onActivities} />
 
@@ -222,35 +222,35 @@ function StatusSwitch({ status, onChange }: { status: EntryStatus; onChange: (s:
   );
 }
 
-type NoteStatus = "idle" | "saving" | "saved" | "waiting";
-
 /**
  * Saves a moment after typing stops, when the field loses focus, when the
  * phone locks or the app is backgrounded, and when the card closes. Each save
  * lands on the phone first (so it survives a dropped signal or iOS closing the
- * app) and "Saved" only shows once the server has confirmed it.
+ * app). The label follows the phone's queue, so "Saved" only shows once the
+ * server has it — even if that happens later, after an automatic retry.
  */
 function NoteField({
   initial,
   syncing,
+  stuck,
   onSave,
 }: {
   initial: string;
-  /** Still waiting on the phone; once false, an automatic retry has saved it. */
+  /** This entry's note is still waiting on the phone. */
   syncing: boolean;
+  /** Changes can't go out right now (no signal, or an earlier one failed). */
+  stuck: boolean;
   onSave: (note: string) => Promise<SyncResult>;
 }) {
   const id = useId();
   const offline = useOffline();
   const [value, setValue] = useState(initial);
-  const [status, setStatus] = useState<NoteStatus>("idle");
+  const [sent, setSent] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const lastSent = useRef(initial);
   const latest = useRef(value);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const onSaveRef = useRef(onSave);
-  const mounted = useRef(false);
-  const saveCount = useRef(0);
 
   useLayoutEffect(() => {
     latest.current = value;
@@ -267,24 +267,17 @@ function NoteField({
     const next = latest.current;
     if (next.trim() === lastSent.current.trim()) return;
     lastSent.current = next;
-    const mine = ++saveCount.current;
-    if (mounted.current) setStatus("saving");
-    void onSaveRef.current(next).then((result) => {
-      if (!mounted.current || mine !== saveCount.current) return;
-      // A failed send stays saved on the phone and is retried automatically.
-      setStatus(result.ok ? "saved" : result.reason === "failed" ? "waiting" : "idle");
-    });
+    setSent(true);
+    void onSaveRef.current(next);
   }
 
   useEffect(() => {
-    mounted.current = true;
     const onHide = () => {
       if (document.visibilityState === "hidden") flush();
     };
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("pagehide", flush);
     return () => {
-      mounted.current = false;
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", flush);
       // Don't lose typing when the card closes or the screen changes.
@@ -292,16 +285,13 @@ function NoteField({
     };
   }, []);
 
-  const label =
-    status === "saving"
-      ? offline
-        ? { text: "Saved on this phone — will sync", tone: "text-ink-3" }
-        : { text: "Saving…", tone: "text-ink-3" }
-      : status === "waiting" && syncing
-        ? { text: "Saved on this phone — will sync", tone: "text-ink-3" }
-        : status === "saved" || status === "waiting"
-          ? { text: "Saved", tone: "text-done" }
-          : null;
+  const label = syncing
+    ? offline || stuck
+      ? { text: "Saved on this phone — will sync", tone: "text-ink-3" }
+      : { text: "Saving…", tone: "text-ink-3" }
+    : sent
+      ? { text: "Saved", tone: "text-done" }
+      : null;
 
   return (
     <div>
@@ -324,7 +314,6 @@ function NoteField({
         placeholder="How did it go? What did you work on?"
         onChange={(e) => {
           setValue(e.target.value);
-          if (status === "saved") setStatus("idle");
           clearTimeout(timer.current);
           timer.current = setTimeout(flush, 900);
         }}

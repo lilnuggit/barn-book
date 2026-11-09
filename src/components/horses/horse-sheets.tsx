@@ -6,22 +6,21 @@ import { useOffline } from "next/offline";
 import { useRef, useState } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import { PALETTE } from "@/lib/palette";
-import { run } from "@/lib/sync";
+import { notePageChange, run, usePendingWrites } from "@/lib/sync";
 import { ColorPicker } from "../color-picker";
 import { headerButtonClass } from "../page-header";
 import { Sheet, SheetError } from "../sheet";
 import { toast } from "../toast";
 
+// Every change here is stored on the phone first (like the day's list), so it
+// survives a dropped signal and iOS closing the app, and goes out in order.
+
 const inputClass =
   "w-full rounded-xl bg-surface-2 px-3.5 py-2.5 text-ink placeholder:text-ink-3 focus:bg-surface focus:ring-2 focus:ring-brand/50 focus:outline-none";
 const labelClass = "mb-2 block text-[13px] font-semibold tracking-wide text-ink-3 uppercase";
 
-function problem(result: SyncResult): string | null {
-  if (result.ok) return null;
-  if (result.reason === "invalid") return result.error;
-  if (result.reason === "failed") return "Couldn’t reach the server — please try again.";
-  return null; // signed out: the app is taking you to sign in
-}
+const SAVED_ON_PHONE = "Saved on this phone — it’ll sync when it can";
+const SAVED_OFFLINE = "No signal — saved on this phone, it’ll sync when you’re back online";
 
 /**
  * Each opening of a sheet is a session. A save that finishes after its sheet
@@ -32,7 +31,6 @@ function useSheetSession() {
   const [openSession, setOpenSession] = useState(0);
   const [busySession, setBusySession] = useState<number | null>(null);
   return {
-    current,
     busy: busySession !== null && busySession === openSession,
     begin() {
       current.current += 1;
@@ -41,18 +39,14 @@ function useSheetSession() {
     end() {
       current.current += 1;
     },
-    async send(call: () => Promise<SyncResult>): Promise<{ result: SyncResult; stillOpen: boolean }> {
+    async send(result: Promise<SyncResult>): Promise<{ result: SyncResult; stillOpen: boolean }> {
       const s = current.current;
       setBusySession(s);
-      const result = await call();
+      const r = await result;
       setBusySession((b) => (b === s ? null : b));
-      return { result, stillOpen: s === current.current };
+      return { result: r, stillOpen: s === current.current };
     },
   };
-}
-
-function busyCloseMessage(offline: boolean) {
-  return offline ? "No signal — your changes will save when you’re back online" : "Still saving your changes…";
 }
 
 export function AddHorseButton() {
@@ -62,9 +56,21 @@ export function AddHorseButton() {
   const [name, setName] = useState("");
   const [color, setColor] = useState<string>(PALETTE[0]);
   const [error, setError] = useState<string | null>(null);
-  // Saving the same name and color again reuses the id (so a double tap or a
-  // retry can't create two horses); anything different is a new horse.
+  // What's in the form right now, for results that arrive after the sheet closed.
+  const form = useRef({ name: "", color: PALETTE[0] as string });
+  // Saving the same name and color again reuses the id (so a double tap, a
+  // retry, or saving again after closing can't create two horses).
   const draft = useRef<{ id: string; content: string } | null>(null);
+
+  function changeName(value: string) {
+    form.current.name = value;
+    setName(value);
+  }
+
+  function changeColor(value: string) {
+    form.current.color = value;
+    setColor(value);
+  }
 
   function openSheet() {
     session.begin();
@@ -73,18 +79,17 @@ export function AddHorseButton() {
   }
 
   function close() {
-    if (session.busy) toast(busyCloseMessage(offline));
+    if (session.busy) toast(SAVED_ON_PHONE);
     session.end();
     setOpen(false);
   }
 
-  function finish() {
+  /** The horse is saved (or stored on the phone): clear the form for the next one. */
+  function resetForm(savedColor: string) {
     draft.current = null;
-    setName("");
+    changeName("");
+    changeColor(PALETTE[(PALETTE.indexOf(savedColor as (typeof PALETTE)[number]) + 1) % PALETTE.length]);
     setError(null);
-    setColor(PALETTE[(PALETTE.indexOf(color as (typeof PALETTE)[number]) + 1) % PALETTE.length]);
-    session.end();
-    setOpen(false);
   }
 
   function save() {
@@ -96,25 +101,29 @@ export function AddHorseButton() {
     const sending = run("createHorse", [horse], { key: `horse:${horse.id}`, meta: horse });
 
     if (offline) {
-      // Saved on the phone; it shows up once it syncs.
-      finish();
+      resetForm(color);
+      session.end();
+      setOpen(false);
       toast(`${trimmed} will be added when you’re back online`);
       return;
     }
-    void session
-      .send(() => sending)
-      .then(({ result, stillOpen }) => {
-        if (result.ok || result.reason === "failed") {
-          // "failed" is still saved on the phone and retried automatically.
-          if (stillOpen) finish();
-          else draft.current = null;
-          toast(result.ok ? `Added ${trimmed}` : `${trimmed} is saved on this phone and will be added when it syncs`);
-          return;
+    void session.send(sending).then(({ result, stillOpen }) => {
+      if (result.ok || result.reason === "failed") {
+        // "failed" is still stored on the phone and retried automatically.
+        const formUnchanged = `${form.current.name.trim()}|${form.current.color}` === content;
+        if (stillOpen || formUnchanged) resetForm(color);
+        if (stillOpen) {
+          session.end();
+          setOpen(false);
         }
-        const message = problem(result);
-        if (message && stillOpen) setError(message);
-        else if (message) toast(message);
-      });
+        toast(result.ok ? `Added ${trimmed}` : `${trimmed}: ${SAVED_ON_PHONE.toLowerCase()}`);
+        return;
+      }
+      if (result.reason === "invalid") {
+        if (stillOpen) setError(result.error);
+        else toast(result.error);
+      }
+    });
   }
 
   return (
@@ -147,7 +156,7 @@ export function AddHorseButton() {
             <input
               id="new-horse-name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => changeName(e.target.value)}
               placeholder="Barn name"
               maxLength={60}
               autoCapitalize="words"
@@ -158,13 +167,15 @@ export function AddHorseButton() {
           </div>
           <div>
             <p className={labelClass}>Color</p>
-            <ColorPicker value={color} onChange={setColor} label="Horse color" />
+            <ColorPicker value={color} onChange={changeColor} label="Horse color" />
           </div>
         </form>
       </Sheet>
     </>
   );
 }
+
+type HorseFields = { name: string; color: string; notes: string };
 
 export function EditHorseButton({
   horse,
@@ -173,58 +184,71 @@ export function EditHorseButton({
 }) {
   const router = useRouter();
   const offline = useOffline();
+  const pending = usePendingWrites();
   const session = useSheetSession();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(horse.name);
   const [color, setColor] = useState(horse.color);
   const [notes, setNotes] = useState(horse.notes);
   const [error, setError] = useState<string | null>(null);
+  const [startedFrom, setStartedFrom] = useState<HorseFields>(horse);
 
-  const dirty = name !== horse.name || color !== horse.color || notes !== horse.notes;
+  const dirty = name !== startedFrom.name || color !== startedFrom.color || notes !== startedFrom.notes;
 
   function openSheet() {
+    // Start from an edit that hasn't synced yet, if there is one, so saving
+    // again can't undo it.
+    const unsynced = pending.findLast(
+      (i) => i.name === "updateHorse" && (i.args[0] as { id: string }).id === horse.id,
+    )?.args[0] as HorseFields | undefined;
+    const fields = unsynced ?? horse;
     session.begin();
-    setName(horse.name);
-    setColor(horse.color);
-    setNotes(horse.notes);
+    setStartedFrom(fields);
+    setName(fields.name);
+    setColor(fields.color);
+    setNotes(fields.notes);
     setError(null);
     setOpen(true);
   }
 
   function close() {
-    if (session.busy) toast(busyCloseMessage(offline));
+    if (session.busy) toast(SAVED_ON_PHONE);
     session.end();
     setOpen(false);
   }
 
-  /** Sends a change; reports the outcome in the sheet if it's still open, else as a toast. */
-  function submit(call: () => Promise<SyncResult>, done: string, after?: () => void) {
-    if (session.busy) return;
-    void session.send(call).then(({ result, stillOpen }) => {
-      const message = problem(result);
-      if (message) {
-        if (stillOpen) setError(message);
-        else toast(message);
+  /** Stores the change; closes right away offline, else once the server answers. */
+  function submit(sending: Promise<SyncResult>, done: string) {
+    if (offline) {
+      session.end();
+      setOpen(false);
+      toast(SAVED_OFFLINE);
+      return;
+    }
+    void session.send(sending).then(({ result, stillOpen }) => {
+      if (!result.ok && result.reason === "invalid") {
+        if (stillOpen) setError(result.error);
+        else toast(result.error);
         return;
       }
-      if (!result.ok) return;
+      if (!result.ok && result.reason === "signed-out") return; // the app is going to sign-in
       if (stillOpen) {
         session.end();
         setOpen(false);
       }
-      toast(done);
-      after?.();
+      toast(result.ok ? done : SAVED_ON_PHONE);
     });
   }
 
   function save() {
-    if (!name.trim()) return;
-    submit(() => run("updateHorse", [{ id: horse.id, name, color, notes }], { persist: false }), "Saved");
+    if (!name.trim() || session.busy) return;
+    submit(run("updateHorse", [{ id: horse.id, name, color, notes }], { key: `horse-edit:${horse.id}` }), "Saved");
   }
 
   function toggleArchive() {
+    if (session.busy) return;
     submit(
-      () => run("setHorseArchived", [horse.id, !horse.archived], { persist: false }),
+      run("setHorseArchived", [horse.id, !horse.archived], { key: `horse-archive:${horse.id}` }),
       horse.archived ? `${horse.name} is back in work` : `${horse.name} archived`,
     );
   }
@@ -235,14 +259,29 @@ export function EditHorseButton({
         ? `Delete ${horse.name} and all ${horse.entryCount} logged ${horse.entryCount === 1 ? "entry" : "entries"}? This can’t be undone.`
         : `Delete ${horse.name}?`;
     if (!window.confirm(what)) return;
-    submit(
-      () => run("deleteHorse", [horse.id], { persist: false }),
-      `Deleted ${horse.name}`,
-      () => {
-        // Leave the deleted horse's page, but don't pull the user off another one.
-        if (window.location.pathname === `/horses/${horse.id}`) router.replace("/horses");
-      },
-    );
+    session.end();
+    setOpen(false);
+    // Leave the horse's page right after the delete is handed to the server.
+    // That order matters: a page change started before a save waits for the
+    // server's answer (with a weak signal, a long wait), one started after it
+    // doesn't. If older changes are still going out first, leave anyway.
+    let left = false;
+    const leave = () => {
+      if (left) return;
+      left = true;
+      clearTimeout(fallback);
+      notePageChange("/horses");
+      router.replace("/horses");
+    };
+    const fallback = setTimeout(leave, 400);
+    // With no signal the page change itself waits for the connection, so say
+    // what's happening now rather than when the server finally answers.
+    if (offline) toast(`No signal — ${horse.name} will be deleted when you’re back online`);
+    void run("deleteHorse", [horse.id], { key: `horse-delete:${horse.id}`, onSend: leave }).then((result) => {
+      if (result.ok) toast(`Deleted ${horse.name}`);
+      else if (result.reason === "invalid") toast(result.error);
+      else if (result.reason === "failed" && !offline) toast(`${horse.name} will be deleted when it syncs`);
+    });
   }
 
   return (

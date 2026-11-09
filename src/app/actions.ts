@@ -21,15 +21,12 @@ const NAME_MAX = 60;
  * { reason: "signed-out" } (never a redirect, which would drop the write) so the
  * client can renew its session and retry.
  */
-async function write(
-  fn: (userId: string) => Promise<ActionResult | void>,
-  { refreshPage = true } = {},
-): Promise<ActionResult> {
+async function write(fn: (userId: string) => Promise<ActionResult | void>): Promise<ActionResult> {
   const userId = await getUserIdOrNull();
   if (!userId) return { ok: false, reason: "signed-out" };
   try {
     const result = (await fn(userId)) ?? { ok: true };
-    if (result.ok && refreshPage) refresh();
+    if (result.ok) refresh();
     return result;
   } catch (error) {
     if (error instanceof ValidationError) return { ok: false, reason: "invalid", error: error.message };
@@ -218,15 +215,12 @@ export async function setHorseArchived(id: string, archived: boolean): Promise<A
   });
 }
 
-/** The client navigates away afterwards; refreshing the deleted horse's page would only 404. */
+/** The client leaves the horse's page as soon as this is sent; the refresh then updates the list. */
 export async function deleteHorse(id: string): Promise<ActionResult> {
-  return write(
-    async (userId) => {
-      assertUUID(id);
-      await db.delete(horses).where(and(eq(horses.id, id), eq(horses.userId, userId)));
-    },
-    { refreshPage: false },
-  );
+  return write(async (userId) => {
+    assertUUID(id);
+    await db.delete(horses).where(and(eq(horses.id, id), eq(horses.userId, userId)));
+  });
 }
 
 // ---------- activity types ----------

@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { renewSession, replay, run } from "@/lib/sync";
+import { refreshWhenPossible, renewSession, replay } from "@/lib/sync";
 
 /**
  * - Tells the server the phone's time zone, so "today" is right.
@@ -38,7 +38,7 @@ export function AppLifecycle() {
       replay();
       // Through the queue rather than router.refresh(): if the sign-in token
       // expired while away, the queue renews it instead of bouncing to sign-in.
-      if (away > 60_000) void run("refreshPage", [], { persist: false });
+      if (away > 60_000) refreshWhenPossible();
     }
     async function onOnline() {
       await renewSession();
