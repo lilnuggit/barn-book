@@ -16,10 +16,12 @@ note. Nothing gets deleted, so you can look back at what any horse did and when.
 - **History**: a month calendar with every day's notes below it, plus search
   across notes, horse names, and types of work.
 - **Settings**: add, rename, recolor, reorder, or archive types of work.
-  Download everything as a spreadsheet (CSV).
+  Download the training log, or every horse with its About notes, as CSV.
 
-Losing signal at the barn is fine: changes show up straight away and are saved
-when the connection comes back, as long as the app stays open in the meantime.
+Losing signal at the barn is fine: every change is saved on the phone first and
+sent when there's a connection, in the order it was made, even if iOS closes the
+app in between. A strip above the tabs says when changes are still waiting. (The
+app does need signal to open from scratch.)
 
 ## Stack
 
@@ -71,7 +73,8 @@ commit the new file in `drizzle/`.
 | `src/app/(app)/horses/` | Horse list and horse detail |
 | `src/app/(app)/history/` | Month calendar, log, search |
 | `src/app/(app)/settings/` | Types of work, export, account |
-| `src/app/actions.ts` | All writes (server actions), each scoped to the signed-in user |
+| `src/app/actions.ts` | All writes (server actions), each scoped to the signed-in user; they return a result instead of redirecting |
+| `src/lib/sync.ts` | Client save queue: stores changes on the phone, sends them in order, renews the Clerk token, retries |
 | `src/lib/data.ts` | All reads |
 | `src/db/schema.ts` | Tables: `horses`, `activity_types`, `entries` |
 | `src/app/api/export/route.ts` | CSV download |
