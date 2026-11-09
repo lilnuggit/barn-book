@@ -25,6 +25,10 @@ export const viewport: Viewport = {
   ],
 };
 
+// Inside the installed home-screen app, Google sign-in opens a separate browser
+// whose login the app never sees, so only email sign-in is offered there.
+const hideInInstalledApp = { "@media (display-mode: standalone)": { display: "none" } };
+
 const clerkAppearance = {
   variables: {
     colorPrimary: "#2e5546",
@@ -32,6 +36,13 @@ const clerkAppearance = {
     colorBackground: "#ffffff",
     borderRadius: "0.75rem",
     fontFamily: 'ui-sans-serif, system-ui, -apple-system, "SF Pro Text", sans-serif',
+  },
+  elements: {
+    socialButtonsRoot: hideInInstalledApp,
+    dividerRow: hideInInstalledApp,
+    // 16px keeps iOS from zooming the page when a field is tapped.
+    formFieldInput: { fontSize: "16px" },
+    otpCodeFieldInput: { fontSize: "16px" },
   },
 };
 

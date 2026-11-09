@@ -23,7 +23,7 @@ export function PageHeader({
             {back ? (
               <Link
                 href={back.href}
-                className="-ml-2 flex items-center gap-0.5 rounded-full py-1.5 pr-3 pl-1 text-[16px] font-medium text-header-ink-2"
+                className="-ml-2 flex min-h-11 items-center gap-0.5 rounded-full pr-3 pl-1 text-[16px] font-medium text-header-ink-2"
               >
                 <ChevronLeft className="size-6" />
                 {back.label}
@@ -46,4 +46,4 @@ export function PageHeader({
 
 /** Pill-shaped button that sits on the green header. */
 export const headerButtonClass =
-  "inline-flex items-center gap-1.5 rounded-full bg-header-fill px-3.5 py-1.5 text-[15px] font-semibold text-header-ink active:opacity-70";
+  "inline-flex min-h-11 items-center gap-1.5 rounded-full bg-header-fill px-4 text-[15px] font-semibold text-header-ink active:opacity-70";

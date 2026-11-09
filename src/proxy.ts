@@ -3,9 +3,11 @@ import { NextResponse } from "next/server";
 import { LOCAL_DEV_USER_ID } from "@/lib/dev-mode";
 
 // Clerk needs its middleware running so auth() works. The actual access checks
-// happen next to the data: every page, server action, and API route calls
-// requireUserId() and only ever reads or writes that user's rows.
-export default LOCAL_DEV_USER_ID ? () => NextResponse.next() : clerkMiddleware();
+// happen next to the data: every page, server action, and API route checks the
+// signed-in user and only ever reads or writes that user's rows.
+export default LOCAL_DEV_USER_ID
+  ? () => NextResponse.next()
+  : clerkMiddleware({ signInUrl: "/sign-in", signUpUrl: "/sign-up" });
 
 export const config = {
   matcher: [

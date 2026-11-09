@@ -126,13 +126,13 @@ function SearchBox({ query }: { query: string }) {
         placeholder="Search notes, horses, work…"
         enterKeyHint="search"
         autoComplete="off"
-        className="w-full rounded-xl bg-surface py-2.5 pr-10 pl-11 text-ink shadow-card ring-1 ring-line placeholder:text-ink-3 focus:ring-2 focus:ring-brand/50 focus:outline-none [&::-webkit-search-cancel-button]:hidden"
+        className="w-full rounded-xl bg-surface py-2.5 pr-12 pl-11 text-ink shadow-card ring-1 ring-line placeholder:text-ink-3 focus:ring-2 focus:ring-brand/50 focus:outline-none [&::-webkit-search-cancel-button]:hidden"
       />
       {query && (
         <Link
           href="/history"
           aria-label="Clear search"
-          className="absolute top-1/2 right-2 grid size-8 -translate-y-1/2 place-items-center rounded-full text-ink-3"
+          className="absolute top-1/2 right-0.5 grid size-11 -translate-y-1/2 place-items-center rounded-full text-ink-3"
         >
           <X className="size-5" />
         </Link>

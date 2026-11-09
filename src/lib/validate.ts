@@ -1,3 +1,6 @@
+/** Input that can never succeed, reported back to the user instead of crashing. */
+export class ValidationError extends Error {}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isUUID(value: unknown): value is string {
@@ -5,14 +8,14 @@ export function isUUID(value: unknown): value is string {
 }
 
 export function assertUUID(value: unknown, what = "id"): string {
-  if (!isUUID(value)) throw new Error(`Invalid ${what}`);
+  if (!isUUID(value)) throw new ValidationError(`Invalid ${what}`);
   return value;
 }
 
 export function uuidList(value: unknown, max = 50): string[] {
-  if (!Array.isArray(value)) throw new Error("Expected a list");
+  if (!Array.isArray(value)) throw new ValidationError("Expected a list");
   const ids = [...new Set(value)];
-  if (ids.length > max || !ids.every(isUUID)) throw new Error("Invalid list of ids");
+  if (ids.length > max || !ids.every(isUUID)) throw new ValidationError("Invalid list of ids");
   return ids as string[];
 }
 

@@ -1,9 +1,11 @@
 "use client";
 
-import { CalendarCheck, NotebookText, Settings } from "lucide-react";
+import { CalendarCheck, CloudOff, NotebookText, RefreshCw, Settings } from "lucide-react";
 import Link from "next/link";
 import { useSelectedLayoutSegment } from "next/navigation";
+import { useOffline } from "next/offline";
 import { Suspense } from "react";
+import { usePendingWrites } from "@/lib/sync";
 import { HorseshoeIcon } from "./icons";
 import { cx } from "./ui";
 
@@ -35,6 +37,7 @@ function TabBarView({ active }: { active: string | null | undefined }) {
       aria-label="Main"
       className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/90 pb-safe backdrop-blur-xl backdrop-saturate-150"
     >
+      <SyncStatus />
       <ul className="mx-auto grid max-w-xl grid-cols-4">
         {TABS.map(({ href, segment: s, label, Icon }) => {
           const isActive = active === s;
@@ -56,5 +59,35 @@ function TabBarView({ active }: { active: string | null | undefined }) {
         })}
       </ul>
     </nav>
+  );
+}
+
+/** A slim line above the tabs: no signal, or changes that haven't synced yet. */
+function SyncStatus() {
+  const offline = useOffline();
+  const pending = usePendingWrites();
+  const stuck = pending.filter((i) => i.attempts > 0).length;
+
+  if (!offline && stuck === 0) return null;
+  return (
+    <p
+      role="status"
+      className={cx(
+        "pointer-events-none flex items-center justify-center gap-1.5 px-4 py-1 text-center text-xs font-medium",
+        offline ? "bg-ink text-canvas" : "bg-brand-soft text-brand",
+      )}
+    >
+      {offline ? (
+        <>
+          <CloudOff className="size-3.5 shrink-0" aria-hidden />
+          No signal — changes are saved on this phone and will sync
+        </>
+      ) : (
+        <>
+          <RefreshCw className="size-3.5 shrink-0" aria-hidden />
+          {stuck} {stuck === 1 ? "change hasn’t" : "changes haven’t"} synced yet — retrying
+        </>
+      )}
+    </p>
   );
 }

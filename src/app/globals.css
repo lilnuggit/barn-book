@@ -7,7 +7,7 @@
   --surface-2: #efebe1;
   --ink: #1d1b16;
   --ink-2: #5d574c;
-  --ink-3: #8a8375;
+  --ink-3: #6f6859;
   --line: #e4ded1;
   --brand: #2e5546;
   --brand-strong: #234538;
@@ -31,7 +31,7 @@
     --surface-2: #262823;
     --ink: #eceae3;
     --ink-2: #b4aea2;
-    --ink-3: #888174;
+    --ink-3: #9a9386;
     --line: #2e302a;
     --brand: #84bb9f;
     --brand-strong: #9bcab1;
@@ -148,6 +148,28 @@ dialog.sheet[open] {
   display: flex;
   flex-direction: column;
   animation: sheet-up 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Toasts live in the top layer (a popover) so they show above open sheets. */
+.toast-layer {
+  position: fixed;
+  inset: auto 0 calc(env(safe-area-inset-bottom) + 6rem) 0;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0 1rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  overflow: visible;
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+  z-index: 50;
+}
+
+.toast-layer:popover-open {
+  display: flex;
 }
 
 html:has(dialog.sheet[open]) {

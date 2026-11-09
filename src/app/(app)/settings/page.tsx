@@ -1,10 +1,10 @@
-import { SignOutButton } from "@clerk/nextjs";
 import { currentUser } from "@clerk/nextjs/server";
-import { Download, LogOut, Share, SquarePlus } from "lucide-react";
+import { Download, Share, SquarePlus } from "lucide-react";
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { PageHeader } from "@/components/page-header";
 import { ActivityManager } from "@/components/settings/activity-manager";
+import { SignOutRow } from "@/components/settings/sign-out-row";
 import { Card, SectionTitle, Skeleton } from "@/components/ui";
 import { requireUserId } from "@/lib/auth";
 import { countEntries, getActivityTypes } from "@/lib/data";
@@ -27,17 +27,29 @@ export default function SettingsPage() {
             <a
               href="/api/export"
               download
-              className="flex items-center gap-3 px-4 py-3.5 active:bg-surface-2"
+              className="flex items-center gap-3 border-b border-line px-4 py-3.5 active:bg-surface-2"
             >
-              <Download className="size-5 text-brand" />
+              <Download className="size-5 shrink-0 text-brand" />
               <span className="flex-1">
-                <span className="block text-[16px] font-medium">Download everything (CSV)</span>
+                <span className="block text-[16px] font-medium">Training log (CSV)</span>
                 <Suspense fallback={<span className="block h-5" />}>
                   <EntryCount />
                 </Suspense>
               </span>
             </a>
+            <a
+              href="/api/export?what=horses"
+              download
+              className="flex items-center gap-3 px-4 py-3.5 active:bg-surface-2"
+            >
+              <Download className="size-5 shrink-0 text-brand" />
+              <span className="flex-1">
+                <span className="block text-[16px] font-medium">Horses &amp; About notes (CSV)</span>
+                <span className="block text-sm text-ink-3">Every horse, including archived ones</span>
+              </span>
+            </a>
           </Card>
+          <p className="mt-2 px-1 text-sm text-ink-3">Opens in Numbers, Excel, or Google Sheets.</p>
         </section>
 
         <section className="[@media(display-mode:standalone)]:hidden">
@@ -79,7 +91,7 @@ async function EntryCount() {
   const n = await countEntries(userId);
   return (
     <span className="block text-sm text-ink-3">
-      {n} {n === 1 ? "entry" : "entries"} — opens in Numbers, Excel, or Google Sheets
+      Every day you’ve planned — {n} {n === 1 ? "entry" : "entries"}
     </span>
   );
 }
@@ -97,12 +109,7 @@ async function Account() {
         <p className="text-sm text-ink-3">Signed in as</p>
         <p className="truncate text-[16px] font-medium">{email}</p>
       </div>
-      <SignOutButton redirectUrl="/sign-in">
-        <button type="button" className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-danger active:bg-danger-soft">
-          <LogOut className="size-5" />
-          <span className="text-[16px] font-medium">Sign out</span>
-        </button>
-      </SignOutButton>
+      <SignOutRow />
     </Card>
   );
 }

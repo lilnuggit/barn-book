@@ -1,9 +1,10 @@
 "use client";
 
-import { Check, ChevronDown, Minus, Trash2 } from "lucide-react";
+import { Check, ChevronDown, CloudOff, Minus, Trash2 } from "lucide-react";
 import { useOffline } from "next/offline";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { EntryStatus } from "@/db/schema";
+import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite, DayEntry } from "@/lib/data";
 import { colorClass } from "@/lib/palette";
 import { ToggleChip } from "../toggle-chip";
@@ -14,6 +15,7 @@ export function EntryCard({
   activities,
   activityById,
   expanded,
+  waiting,
   onToggleExpanded,
   onStatus,
   onNote,
@@ -24,9 +26,11 @@ export function EntryCard({
   activities: ActivityLite[];
   activityById: Map<string, ActivityLite>;
   expanded: boolean;
+  /** Has changes saved on the phone that haven't reached the server yet. */
+  waiting: boolean;
   onToggleExpanded: () => void;
   onStatus: (status: EntryStatus) => void;
-  onNote: (note: string) => void;
+  onNote: (note: string) => Promise<SyncResult>;
   onActivities: (ids: string[]) => void;
   onRemove: () => void;
 }) {
@@ -58,6 +62,11 @@ export function EntryCard({
               {skipped && (
                 <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold text-ink-3">
                   Skipped
+                </span>
+              )}
+              {waiting && (
+                <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-ink-3">
+                  <CloudOff className="size-3.5" aria-hidden /> Not synced yet
                 </span>
               )}
             </div>
@@ -94,7 +103,7 @@ export function EntryCard({
               onClick={() => {
                 if (confirm(`Remove ${entry.horseName} from this day?`)) onRemove();
               }}
-              className="flex items-center gap-1.5 rounded-full px-2 py-2 text-[15px] font-medium text-danger active:opacity-70"
+              className="flex min-h-11 items-center gap-1.5 rounded-full px-2 text-[15px] font-medium text-danger active:opacity-70"
             >
               <Trash2 className="size-4" /> Remove
             </button>
@@ -124,7 +133,7 @@ function WorkEditor({
           type="button"
           onClick={() => setEditing((v) => !v)}
           aria-expanded={editing}
-          className="-mr-1 rounded-full px-2 py-1 text-[15px] font-semibold text-brand active:opacity-70"
+          className="-my-2 -mr-2 min-h-11 rounded-full px-3 text-[15px] font-semibold text-brand active:opacity-70"
         >
           {editing ? "Done" : "Change"}
         </button>
@@ -199,7 +208,7 @@ function StatusSwitch({ status, onChange }: { status: EntryStatus; onChange: (s:
           aria-checked={status === o.value}
           onClick={() => status !== o.value && onChange(o.value)}
           className={cx(
-            "rounded-full px-3 py-1.5 text-sm font-semibold transition-colors",
+            "min-h-11 rounded-full px-3.5 text-sm font-semibold transition-colors",
             status === o.value ? "bg-surface text-ink shadow-sm" : "text-ink-3",
           )}
         >
@@ -210,17 +219,26 @@ function StatusSwitch({ status, onChange }: { status: EntryStatus; onChange: (s:
   );
 }
 
-/** Saves a moment after typing stops, when the field loses focus, and when it closes. */
-function NoteField({ initial, onSave }: { initial: string; onSave: (note: string) => void }) {
+type NoteStatus = "idle" | "saving" | "saved" | "waiting";
+
+/**
+ * Saves a moment after typing stops, when the field loses focus, when the
+ * phone locks or the app is backgrounded, and when the card closes. Each save
+ * lands on the phone first (so it survives a dropped signal or iOS closing the
+ * app) and "Saved" only shows once the server has confirmed it.
+ */
+function NoteField({ initial, onSave }: { initial: string; onSave: (note: string) => Promise<SyncResult> }) {
   const id = useId();
   const offline = useOffline();
   const [value, setValue] = useState(initial);
-  const [saved, setSaved] = useState(false);
+  const [status, setStatus] = useState<NoteStatus>("idle");
   const ref = useRef<HTMLTextAreaElement>(null);
-  const lastSaved = useRef(initial);
+  const lastSent = useRef(initial);
   const latest = useRef(value);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const onSaveRef = useRef(onSave);
+  const mounted = useRef(false);
+  const saveCount = useRef(0);
 
   useLayoutEffect(() => {
     latest.current = value;
@@ -235,14 +253,43 @@ function NoteField({ initial, onSave }: { initial: string; onSave: (note: string
   function flush() {
     clearTimeout(timer.current);
     const next = latest.current;
-    if (next.trim() === lastSaved.current.trim()) return;
-    lastSaved.current = next;
-    onSaveRef.current(next);
-    setSaved(true);
+    if (next.trim() === lastSent.current.trim()) return;
+    lastSent.current = next;
+    const mine = ++saveCount.current;
+    if (mounted.current) setStatus("saving");
+    void onSaveRef.current(next).then((result) => {
+      if (!mounted.current || mine !== saveCount.current) return;
+      // A failed send stays saved on the phone and is retried automatically.
+      setStatus(result.ok ? "saved" : result.reason === "failed" ? "waiting" : "idle");
+    });
   }
 
-  // Don't lose typing when the card closes or the screen changes.
-  useEffect(() => () => flush(), []);
+  useEffect(() => {
+    mounted.current = true;
+    const onHide = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      mounted.current = false;
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", flush);
+      // Don't lose typing when the card closes or the screen changes.
+      flush();
+    };
+  }, []);
+
+  const label =
+    status === "saving"
+      ? offline
+        ? { text: "Saved on this phone — will sync", tone: "text-ink-3" }
+        : { text: "Saving…", tone: "text-ink-3" }
+      : status === "waiting"
+        ? { text: "Saved on this phone — will sync", tone: "text-ink-3" }
+        : status === "saved"
+          ? { text: "Saved", tone: "text-done" }
+          : null;
 
   return (
     <div>
@@ -250,12 +297,11 @@ function NoteField({ initial, onSave }: { initial: string; onSave: (note: string
         <label htmlFor={id} className="text-[13px] font-semibold tracking-wide text-ink-3 uppercase">
           Note
         </label>
-        {saved &&
-          (offline ? (
-            <span className="text-xs font-medium text-ink-3">Saves when you’re back online</span>
-          ) : (
-            <span className="text-xs font-medium text-done">Saved</span>
-          ))}
+        {label && (
+          <span role="status" className={cx("text-xs font-medium", label.tone)}>
+            {label.text}
+          </span>
+        )}
       </div>
       <textarea
         id={id}
@@ -266,7 +312,7 @@ function NoteField({ initial, onSave }: { initial: string; onSave: (note: string
         placeholder="How did it go? What did you work on?"
         onChange={(e) => {
           setValue(e.target.value);
-          setSaved(false);
+          if (status === "saved") setStatus("idle");
           clearTimeout(timer.current);
           timer.current = setTimeout(flush, 900);
         }}

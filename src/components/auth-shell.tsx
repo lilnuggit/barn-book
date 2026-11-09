@@ -9,6 +9,9 @@ export function AuthShell({ children }: { children: ReactNode }) {
           <HorseshoeMark className="size-14" />
           <h1 className="font-serif text-3xl font-semibold tracking-tight">Barn Book</h1>
           <p className="text-sm text-header-ink-2">Your horses’ daily training log</p>
+          <p className="mt-2 hidden rounded-full bg-header-fill px-3 py-1 text-xs text-header-ink [@media(display-mode:standalone)]:block">
+            Sign in with your email — you’ll get a code
+          </p>
         </div>
       </div>
       <div className="-mt-8 flex justify-center px-4">

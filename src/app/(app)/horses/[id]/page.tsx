@@ -16,13 +16,14 @@ import {
   type ActivityLite,
   type HorseStats,
 } from "@/lib/data";
-import { addDays, agoLabel, dayOfWeek, firstDayOfWeek, formatShort, weekdayLabels } from "@/lib/dates";
+import { addDays, agoLabel, dayOfWeek, firstDayOfWeek, formatShort, monthOf, weekdayLabels } from "@/lib/dates";
 import { getRequestPrefs } from "@/lib/prefs";
 import { isUUID } from "@/lib/validate";
 
 export const metadata: Metadata = { title: "Horse" };
 
 const PAGE = 40;
+const MAX_SHOWN = 2000;
 
 export default function HorsePage({ params, searchParams }: PageProps<"/horses/[id]">) {
   return (
@@ -43,7 +44,7 @@ async function HorseDetail({
   const [{ id }, query, { today, locale }] = await Promise.all([params, searchParams, getRequestPrefs()]);
   if (!isUUID(id)) notFound();
 
-  const shown = Math.min(Math.max(Number(query.show) || PAGE, PAGE), 2000);
+  const shown = Math.min(Math.max(Number(query.show) || PAGE, PAGE), MAX_SHOWN);
   const [horse, stats, history, activities, entryCount] = await Promise.all([
     getHorse(userId, id),
     getHorseStats(userId, id, today),
@@ -126,13 +127,21 @@ async function HorseDetail({
                 locale={locale}
                 showHorse={false}
               />
-              {history.hasMore && (
+              {history.hasMore && shown < MAX_SHOWN && (
                 <Link
                   href={`/horses/${horse.id}?show=${shown + PAGE * 2}`}
                   scroll={false}
                   className="mt-4 block rounded-2xl py-3 text-center text-[16px] font-semibold text-brand ring-1 ring-line active:bg-surface-2"
                 >
                   Show older entries
+                </Link>
+              )}
+              {history.hasMore && shown >= MAX_SHOWN && (
+                <Link
+                  href={`/history?m=${monthOf(history.rows[history.rows.length - 1]!.date)}`}
+                  className="mt-4 block rounded-2xl py-3 text-center text-[16px] font-semibold text-brand ring-1 ring-line active:bg-surface-2"
+                >
+                  Older entries are in History
                 </Link>
               )}
             </>

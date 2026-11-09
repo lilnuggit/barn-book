@@ -1,10 +1,10 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import { useMemo, useState, useTransition } from "react";
-import { createHorse } from "@/app/actions";
+import { useMemo, useState } from "react";
 import type { ActivityLite, HorseLite } from "@/lib/data";
 import { PALETTE } from "@/lib/palette";
+import { run, usePendingWrites } from "@/lib/sync";
 import { Sheet } from "../sheet";
 import { toast } from "../toast";
 import { ToggleChip } from "../toggle-chip";
@@ -33,14 +33,15 @@ export function AddSheet({
   const [created, setCreated] = useState<HorseLite[]>([]);
   const [newName, setNewName] = useState("");
   const [showNewHorse, setShowNewHorse] = useState(false);
-  const [, startCreate] = useTransition();
+  const pending = usePendingWrites();
 
+  // Horses added here (or still waiting on the phone to sync) show up right away.
   const allHorses = useMemo(() => {
-    const known = new Set(horses.map((h) => h.id));
-    return [...horses, ...created.filter((h) => !known.has(h.id))].sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-    );
-  }, [horses, created]);
+    const waiting = pending.filter((i) => i.name === "createHorse").map((i) => i.meta as HorseLite);
+    const byId = new Map<string, HorseLite>();
+    for (const h of [...horses, ...waiting, ...created]) if (h && !byId.has(h.id)) byId.set(h.id, h);
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  }, [horses, created, pending]);
 
   const addingFirstHorse = allHorses.length === 0;
   const newHorseOpen = showNewHorse || addingFirstHorse;
@@ -57,14 +58,9 @@ export function AddSheet({
     setHorseIds((ids) => [...ids, horse.id]);
     setNewName("");
     setShowNewHorse(false);
-    startCreate(async () => {
-      try {
-        const result = await createHorse(horse);
-        if (!result.ok) toast(result.error);
-      } catch (error) {
-        console.error(error);
-        toast("Couldn’t save that horse — please try again");
-      }
+    // Queued ahead of any entries for this horse, so the server always has it first.
+    void run("createHorse", [horse], { key: `horse:${horse.id}`, meta: horse }).then((result) => {
+      if (!result.ok && result.reason === "invalid") toast(result.error);
     });
   }
 
@@ -119,7 +115,7 @@ export function AddSheet({
             <button
               type="button"
               onClick={() => setShowNewHorse(true)}
-              className="inline-flex min-h-9 items-center gap-1 rounded-full px-3 py-1.5 text-[15px] font-medium text-brand ring-1 ring-brand/40 ring-inset active:opacity-70"
+              className="inline-flex min-h-11 items-center gap-1 rounded-full px-3 text-[15px] font-medium text-brand ring-1 ring-brand/40 ring-inset active:opacity-70"
             >
               <Plus className="size-4" /> New horse
             </button>

@@ -3,18 +3,13 @@
 import { CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Copy, Loader2, Plus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useOffline } from "next/offline";
 import { useMemo, useOptimistic, useState, useTransition } from "react";
-import {
-  addEntries,
-  copyDay,
-  deleteEntry,
-  saveEntryNote,
-  setEntryActivities,
-  setEntryStatus,
-} from "@/app/actions";
 import type { EntryStatus } from "@/db/schema";
+import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite, CopySuggestion, DayEntry, HorseLite } from "@/lib/data";
 import { addDays, daysBetween, formatLong, formatShort, isISODate, relativeDayName } from "@/lib/dates";
+import { run, usePendingWrites, type OutboxItem } from "@/lib/sync";
 import { HorseshoeMark } from "../icons";
 import { headerButtonClass } from "../page-header";
 import { toast } from "../toast";
@@ -49,42 +44,95 @@ function reducer(state: DayEntry[], action: Action): DayEntry[] {
   }
 }
 
+/** Layers changes still waiting on the phone over what the server sent. */
+function applyPending(entries: DayEntry[], pending: OutboxItem[], date: string): DayEntry[] {
+  let out = entries;
+  for (const item of pending) {
+    const [first, second] = item.args as [unknown, unknown];
+    switch (item.name) {
+      case "addEntries": {
+        const added = ((item.meta as { entries?: DayEntry[] } | undefined)?.entries ?? []).filter(
+          (e) => e.date === date && !out.some((o) => o.id === e.id),
+        );
+        if (added.length) out = [...out, ...added];
+        break;
+      }
+      case "setEntryStatus":
+        out = out.map((e) => (e.id === first ? { ...e, status: second as EntryStatus } : e));
+        break;
+      case "saveEntryNote":
+        out = out.map((e) => (e.id === first ? { ...e, note: second as string } : e));
+        break;
+      case "setEntryActivities":
+        out = out.map((e) => (e.id === first ? { ...e, activityIds: second as string[] } : e));
+        break;
+      case "deleteEntry":
+        out = out.filter((e) => e.id !== first);
+        break;
+    }
+  }
+  return out;
+}
+
+/** Entries with changes that are stuck on the phone (no signal, or the server didn't answer). */
+function waitingEntryIds(pending: OutboxItem[], offline: boolean): Set<string> {
+  const ids = new Set<string>();
+  for (const item of pending) {
+    if (!offline && item.attempts === 0) continue;
+    if (item.name === "addEntries") {
+      for (const e of (item.meta as { entries?: DayEntry[] } | undefined)?.entries ?? []) ids.add(e.id);
+    } else if (typeof item.args[0] === "string") {
+      ids.add(item.args[0]);
+    }
+  }
+  return ids;
+}
+
+function report(result: SyncResult) {
+  if (!result.ok && result.reason === "invalid") toast(result.error);
+}
+
 export function DayView({ date, today, locale, entries: serverEntries, horses, activities, suggestions }: Props) {
-  // Changes show instantly; the server catches up (or retries when signal returns).
-  const [entries, applyOptimistic] = useOptimistic(serverEntries, reducer);
+  const pending = usePendingWrites();
+  const offline = useOffline();
+  const base = useMemo(() => applyPending(serverEntries, pending, date), [serverEntries, pending, date]);
+  // Changes show instantly; they're saved on the phone and sent in order.
+  const [entries, applyOptimistic] = useOptimistic(base, reducer);
   const [, startTransition] = useTransition();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const activityById = useMemo(() => new Map(activities.map((a) => [a.id, a])), [activities]);
+  const waiting = useMemo(() => waitingEntryIds(pending, offline), [pending, offline]);
   const done = entries.filter((e) => e.status === "done").length;
 
-  function mutate(action: Action, call: () => Promise<unknown>) {
+  function mutate(action: Action, send: () => Promise<SyncResult>): Promise<SyncResult> {
+    const result = send();
     startTransition(async () => {
       applyOptimistic(action);
-      try {
-        await call();
-      } catch (error) {
-        console.error(error);
-        toast("Couldn’t save that — please try again");
-      }
+      report(await result);
     });
+    return result;
   }
 
   function setStatus(entry: DayEntry, status: EntryStatus) {
-    mutate({ type: "update", id: entry.id, patch: { status } }, () => setEntryStatus(entry.id, status));
+    mutate({ type: "update", id: entry.id, patch: { status } }, () =>
+      run("setEntryStatus", [entry.id, status], { key: `status:${entry.id}` }),
+    );
     // Open the card after a check-off so the note box is right there.
     if (status === "done") setExpandedId(entry.id);
   }
 
   function addToDay(horseIds: string[], activityIds: string[], note: string, knownHorses: HorseLite[]) {
     const items = horseIds.map((horseId) => ({ id: crypto.randomUUID(), horseId }));
-    const optimistic: DayEntry[] = items.flatMap(({ id, horseId }) => {
+    const added: DayEntry[] = items.flatMap(({ id, horseId }) => {
       const horse = knownHorses.find((h) => h.id === horseId);
       if (!horse) return [];
       return [{ id, date, horseId, horseName: horse.name, horseColor: horse.color, status: "planned", activityIds, note }];
     });
-    mutate({ type: "add", entries: optimistic }, () => addEntries({ date, items, activityIds, note }));
+    mutate({ type: "add", entries: added }, () =>
+      run("addEntries", [{ date, items, activityIds, note }], { meta: { entries: added } }),
+    );
   }
 
   return (
@@ -111,17 +159,22 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
                 activityById={activityById}
                 expanded={expandedId === entry.id}
                 onToggleExpanded={() => setExpandedId((id) => (id === entry.id ? null : entry.id))}
+                waiting={waiting.has(entry.id)}
                 onStatus={(status) => setStatus(entry, status)}
                 onNote={(note) =>
-                  mutate({ type: "update", id: entry.id, patch: { note } }, () => saveEntryNote(entry.id, note))
+                  mutate({ type: "update", id: entry.id, patch: { note } }, () =>
+                    run("saveEntryNote", [entry.id, note], { key: `note:${entry.id}` }),
+                  )
                 }
                 onActivities={(activityIds) =>
                   mutate({ type: "update", id: entry.id, patch: { activityIds } }, () =>
-                    setEntryActivities(entry.id, activityIds),
+                    run("setEntryActivities", [entry.id, activityIds], { key: `activities:${entry.id}` }),
                   )
                 }
                 onRemove={() => {
-                  mutate({ type: "delete", id: entry.id }, () => deleteEntry(entry.id));
+                  mutate({ type: "delete", id: entry.id }, () =>
+                    run("deleteEntry", [entry.id], { key: `delete:${entry.id}` }),
+                  );
                   toast(`Removed ${entry.horseName}`);
                 }}
               />
@@ -293,12 +346,7 @@ function EmptyDay({
   function copyFrom(from: string) {
     setPendingDate(from);
     startCopy(async () => {
-      try {
-        await copyDay(from, date);
-      } catch (error) {
-        console.error(error);
-        toast("Couldn’t copy that list — please try again");
-      }
+      report(await run("copyDay", [from, date], { key: `copy:${date}` }));
     });
   }
 

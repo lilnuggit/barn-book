@@ -313,3 +313,11 @@ export async function getAllEntriesForExport(userId: string) {
     .where(eq(entries.userId, userId))
     .orderBy(desc(entries.date), asc(entries.sortOrder));
 }
+
+export async function getHorsesForExport(userId: string) {
+  return db
+    .select({ name: horses.name, color: horses.color, archivedAt: horses.archivedAt, notes: horses.notes })
+    .from(horses)
+    .where(eq(horses.userId, userId))
+    .orderBy(sql`lower(${horses.name})`);
+}

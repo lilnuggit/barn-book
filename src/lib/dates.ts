@@ -82,14 +82,16 @@ export function relativeDayName(iso: string, today: string, locale: string) {
   return formatWeekday(iso, locale);
 }
 
-/** "today", "yesterday", "3 days ago", "2 weeks ago", "Mar 4" */
+/** "today", "yesterday", "3 days ago", "2 weeks ago", "Mar 4", or "Mar 4, 2025" in another year */
 export function agoLabel(iso: string, today: string, locale: string) {
   const diff = daysBetween(iso, today);
   if (diff === 0) return "today";
   if (diff === 1) return "yesterday";
-  if (diff < 0) return formatMonthDay(iso, locale);
-  if (diff < 14) return `${diff} days ago`;
-  if (diff < 60) return `${Math.floor(diff / 7)} weeks ago`;
+  if (diff > 1 && diff < 14) return `${diff} days ago`;
+  if (diff >= 14 && diff < 60) return `${Math.floor(diff / 7)} weeks ago`;
+  if (iso.slice(0, 4) !== today.slice(0, 4)) {
+    return fmt(locale, iso, { month: "short", day: "numeric", year: "numeric" });
+  }
   return formatMonthDay(iso, locale);
 }
 

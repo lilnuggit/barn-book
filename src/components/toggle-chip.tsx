@@ -25,7 +25,7 @@ export function ToggleChip({
       onClick={onClick}
       className={cx(
         colorClass(color),
-        "inline-flex min-h-9 items-center gap-1 rounded-full px-3 py-1.5 text-[15px] font-medium ring-1 transition-colors active:scale-[0.97]",
+        "inline-flex min-h-11 items-center gap-1 rounded-full px-3.5 text-[15px] font-medium ring-1 transition-colors active:scale-[0.97]",
         selected ? "bg-tone-bg text-tone-fg ring-tone-solid" : "bg-surface text-ink-2 ring-line",
       )}
     >
