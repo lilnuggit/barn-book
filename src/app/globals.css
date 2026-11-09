@@ -153,7 +153,8 @@ dialog.sheet[open] {
 /* Toasts live in the top layer (a popover) so they show above open sheets. */
 .toast-layer {
   position: fixed;
-  inset: auto 0 calc(env(safe-area-inset-bottom) + 6rem) 0;
+  /* Above the tab bar (and its status strip) and the + button. */
+  inset: auto 0 calc(env(safe-area-inset-bottom) + 10.5rem) 0;
   width: auto;
   height: auto;
   margin: 0;

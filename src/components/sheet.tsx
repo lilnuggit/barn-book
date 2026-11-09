@@ -21,6 +21,7 @@ export function Sheet({
   saveLabel = "Save",
   saveDisabled = false,
   dirty = false,
+  busy = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -33,6 +34,11 @@ export function Sheet({
   saveDisabled?: boolean;
   /** Has unsaved edits: Cancel, Escape, and tapping outside ask before discarding. */
   dirty?: boolean;
+  /**
+   * A save has been sent. Closing is still allowed (without signal it could
+   * wait a long time) but it can't be discarded any more, so don't ask.
+   */
+  busy?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -44,7 +50,7 @@ export function Sheet({
   }, [open]);
 
   function requestClose() {
-    if (dirty && !window.confirm("Discard your changes?")) return;
+    if (dirty && !busy && !window.confirm("Discard your changes?")) return;
     onClose();
   }
 

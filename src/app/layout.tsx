@@ -48,7 +48,8 @@ const clerkAppearance = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en">
+    // data-auth tells the client save queue whether to wait for Clerk.
+    <html lang="en" data-auth={LOCAL_DEV_USER_ID ? "local" : "clerk"}>
       <body className="antialiased">
         {LOCAL_DEV_USER_ID ? (
           children

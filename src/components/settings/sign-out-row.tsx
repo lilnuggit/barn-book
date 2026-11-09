@@ -3,7 +3,8 @@
 import { useClerk } from "@clerk/nextjs";
 import { LogOut } from "lucide-react";
 import { useState } from "react";
-import { clearOutbox, usePendingWrites } from "@/lib/sync";
+import { discard, usePendingWrites } from "@/lib/sync";
+import { toast } from "../toast";
 
 /** Only rendered when Clerk is active (not in local dev mode). */
 export function SignOutRow() {
@@ -12,18 +13,25 @@ export function SignOutRow() {
   const [busy, setBusy] = useState(false);
 
   async function signOut() {
+    const unsynced = pending.map((i) => i.id);
     if (
-      pending.length > 0 &&
+      unsynced.length > 0 &&
       !window.confirm(
-        `${pending.length} ${pending.length === 1 ? "change hasn’t" : "changes haven’t"} synced yet and will be lost if you sign out. Sign out anyway?`,
+        `${unsynced.length} ${unsynced.length === 1 ? "change hasn’t" : "changes haven’t"} synced yet and will be lost if you sign out. Sign out anyway?`,
       )
     ) {
       return;
     }
     setBusy(true);
-    // Changes saved on this phone belong to this account only.
-    clearOutbox();
-    await clerk.signOut({ redirectUrl: "/sign-in" });
+    try {
+      await clerk.signOut({ redirectUrl: "/sign-in" });
+      // Only once the sign-out went through, as the user chose above.
+      discard(unsynced);
+    } catch (error) {
+      console.error(error);
+      setBusy(false);
+      toast("Couldn’t sign out — check your connection and try again");
+    }
   }
 
   return (

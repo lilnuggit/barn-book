@@ -4,12 +4,12 @@ import { CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Copy, Loader2, Pl
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useOffline } from "next/offline";
-import { useMemo, useOptimistic, useState, useTransition } from "react";
+import { useEffect, useMemo, useOptimistic, useState, useTransition } from "react";
 import type { EntryStatus } from "@/db/schema";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite, CopySuggestion, DayEntry, HorseLite } from "@/lib/data";
 import { addDays, daysBetween, formatLong, formatShort, isISODate, relativeDayName } from "@/lib/dates";
-import { run, usePendingWrites, type OutboxItem } from "@/lib/sync";
+import { forgetConfirmedBefore, run, useOverlayWrites, usePendingWrites, type OutboxItem } from "@/lib/sync";
 import { HorseshoeMark } from "../icons";
 import { headerButtonClass } from "../page-header";
 import { toast } from "../toast";
@@ -94,8 +94,11 @@ function report(result: SyncResult) {
 
 export function DayView({ date, today, locale, entries: serverEntries, horses, activities, suggestions }: Props) {
   const pending = usePendingWrites();
+  const overlay = useOverlayWrites();
   const offline = useOffline();
-  const base = useMemo(() => applyPending(serverEntries, pending, date), [serverEntries, pending, date]);
+  const base = useMemo(() => applyPending(serverEntries, overlay, date), [serverEntries, overlay, date]);
+  // Fresh page data includes everything the server confirmed before it arrived.
+  useEffect(() => forgetConfirmedBefore(Date.now()), [serverEntries]);
   // Changes show instantly; they're saved on the phone and sent in order.
   const [entries, applyOptimistic] = useOptimistic(base, reducer);
   const [, startTransition] = useTransition();
@@ -104,6 +107,13 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
 
   const activityById = useMemo(() => new Map(activities.map((a) => [a.id, a])), [activities]);
   const waiting = useMemo(() => waitingEntryIds(pending, offline), [pending, offline]);
+  const notesSyncing = useMemo(
+    () => new Set(pending.filter((i) => i.name === "saveEntryNote").map((i) => i.args[0] as string)),
+    [pending],
+  );
+  // A "Repeat list" that hasn't reached the server yet: show it, and don't
+  // offer to add horses by hand meanwhile (that would add them twice).
+  const copying = pending.some((i) => i.name === "copyDay" && i.args[1] === date);
   const done = entries.filter((e) => e.status === "done").length;
 
   function mutate(action: Action, send: () => Promise<SyncResult>): Promise<SyncResult> {
@@ -140,7 +150,15 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
       <DayHeader date={date} today={today} locale={locale} done={done} total={entries.length} />
 
       <div className="mx-auto max-w-xl px-4 pt-4 pb-20">
-        {entries.length === 0 ? (
+        {entries.length === 0 && copying ? (
+          <div className="flex flex-col items-center px-4 pt-10 text-center">
+            <Loader2 className="size-8 animate-spin text-brand" aria-hidden />
+            <h2 className="mt-4 font-serif text-[22px] font-semibold">Copying the list…</h2>
+            <p className="mt-1 text-[15px] text-ink-2">
+              {offline ? "It’s saved on this phone and will appear when you’re back online." : "Just a moment."}
+            </p>
+          </div>
+        ) : entries.length === 0 ? (
           <EmptyDay
             date={date}
             today={today}
@@ -160,6 +178,7 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
                 expanded={expandedId === entry.id}
                 onToggleExpanded={() => setExpandedId((id) => (id === entry.id ? null : entry.id))}
                 waiting={waiting.has(entry.id)}
+                noteSyncing={notesSyncing.has(entry.id)}
                 onStatus={(status) => setStatus(entry, status)}
                 onNote={(note) =>
                   mutate({ type: "update", id: entry.id, patch: { note } }, () =>
@@ -183,14 +202,15 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
         )}
       </div>
 
-      {(entries.length > 0 || horses.length > 0) && (
+      {(entries.length > 0 || horses.length > 0) && !copying && (
         <button
           type="button"
           onClick={() => setSheetOpen(true)}
           aria-label="Add horses to this day"
           className="fixed z-20 grid size-14 place-items-center rounded-full bg-brand text-brand-ink shadow-lg shadow-black/20 active:scale-95"
           style={{
-            bottom: "calc(env(safe-area-inset-bottom) + 5rem)",
+            // Clear of the tab bar, including its no-signal strip.
+            bottom: "calc(env(safe-area-inset-bottom) + 6.5rem)",
             right: "max(1rem, calc((100vw - 36rem) / 2 + 1rem))",
           }}
         >

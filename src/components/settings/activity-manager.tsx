@@ -1,7 +1,8 @@
 "use client";
 
 import { ArrowDown, ArrowUp, ChevronRight, Plus } from "lucide-react";
-import { useOptimistic, useState, useTransition } from "react";
+import { useOffline } from "next/offline";
+import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite } from "@/lib/data";
 import { PALETTE } from "@/lib/palette";
@@ -148,7 +149,8 @@ function AddActivityRow({ nextColor }: { nextColor: string }) {
       const message = problem(result);
       if (message) return toast(message);
       if (result.ok) {
-        setName("");
+        // Keep anything typed since tapping Add.
+        setName((n) => (n.trim() === trimmed ? "" : n));
         toast(`Added ${trimmed}`);
       }
     });
@@ -188,11 +190,17 @@ function AddActivityRow({ nextColor }: { nextColor: string }) {
 }
 
 function EditActivitySheet({ activity, onClose }: { activity: ActivityLite | null; onClose: () => void }) {
+  const offline = useOffline();
   const [name, setName] = useState("");
   const [color, setColor] = useState("slate");
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
   const [shownId, setShownId] = useState<string | null>(null);
+  // Each opening is a session; a save that lands after its sheet closed
+  // must not close or change the one that's open now.
+  const [openSession, setOpenSession] = useState(0);
+  const [busySession, setBusySession] = useState<number | null>(null);
+  const session = useRef(0);
+  const busy = busySession !== null && busySession === openSession;
 
   // Start from the tapped work type each time the sheet opens.
   if (activity && activity.id !== shownId) {
@@ -200,43 +208,64 @@ function EditActivitySheet({ activity, onClose }: { activity: ActivityLite | nul
     setName(activity.name);
     setColor(activity.color);
     setError(null);
+    setOpenSession((n) => n + 1);
   }
-  if (!activity && shownId !== null) setShownId(null);
+  if (!activity && shownId !== null) {
+    setShownId(null);
+    setOpenSession((n) => n + 1);
+  }
+  useEffect(() => {
+    session.current = openSession;
+  }, [openSession]);
 
   const dirty = activity !== null && (name !== activity.name || color !== activity.color);
 
-  function save() {
-    if (!activity || !name.trim() || isPending) return;
-    startTransition(async () => {
-      const result = await run("updateActivityType", [{ id: activity.id, name, color }], { persist: false });
+  function close() {
+    if (busy) {
+      toast(offline ? "No signal — your changes will save when you’re back online" : "Still saving your changes…");
+    }
+    onClose();
+  }
+
+  function submit(call: () => Promise<SyncResult>, done?: string) {
+    if (busy) return;
+    const s = openSession;
+    setBusySession(s);
+    void call().then((result) => {
+      setBusySession((b) => (b === s ? null : b));
+      const stillOpen = s === session.current;
       const message = problem(result);
-      if (message) return setError(message);
-      if (result.ok) onClose();
+      if (message) {
+        if (stillOpen) setError(message);
+        else toast(message);
+        return;
+      }
+      if (!result.ok) return;
+      if (done) toast(done);
+      if (stillOpen) onClose();
     });
   }
 
+  function save() {
+    if (!activity || !name.trim()) return;
+    submit(() => run("updateActivityType", [{ id: activity.id, name, color }], { persist: false }));
+  }
+
   function archive() {
-    if (!activity || isPending) return;
-    startTransition(async () => {
-      const result = await run("setActivityArchived", [activity.id, true], { persist: false });
-      const message = problem(result);
-      if (message) return setError(message);
-      if (result.ok) {
-        toast(`${activity.name} archived`);
-        onClose();
-      }
-    });
+    if (!activity) return;
+    submit(() => run("setActivityArchived", [activity.id, true], { persist: false }), `${activity.name} archived`);
   }
 
   return (
     <Sheet
       open={activity !== null}
-      onClose={onClose}
+      onClose={close}
       title="Edit work type"
       onSave={save}
-      saveLabel={isPending ? "Saving…" : "Save"}
-      saveDisabled={!name.trim() || isPending}
+      saveLabel={busy ? "Saving…" : "Save"}
+      saveDisabled={!name.trim() || busy}
       dirty={dirty}
+      busy={busy}
     >
       {activity && (
         <form
@@ -244,40 +273,40 @@ function EditActivitySheet({ activity, onClose }: { activity: ActivityLite | nul
             e.preventDefault();
             save();
           }}
-          className="space-y-5"
         >
-          <SheetError message={error} />
-          <div>
-            <label
-              htmlFor="activity-name"
-              className="mb-2 block text-[13px] font-semibold tracking-wide text-ink-3 uppercase"
+          <fieldset disabled={busy} className="space-y-5">
+            <SheetError message={error} />
+            <div>
+              <label
+                htmlFor="activity-name"
+                className="mb-2 block text-[13px] font-semibold tracking-wide text-ink-3 uppercase"
+              >
+                Name
+              </label>
+              <input
+                id="activity-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={60}
+                enterKeyHint="done"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <p className="mb-2 text-[13px] font-semibold tracking-wide text-ink-3 uppercase">Color</p>
+              <ColorPicker value={color} onChange={setColor} label="Work color" />
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <ActivityChip name={name.trim() || "Preview"} color={color} size="md" />
+            </div>
+            <button
+              type="button"
+              onClick={archive}
+              className="min-h-11 w-full rounded-2xl text-[16px] font-semibold text-danger ring-1 ring-line active:bg-danger-soft"
             >
-              Name
-            </label>
-            <input
-              id="activity-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={60}
-              enterKeyHint="done"
-              className={inputClass}
-            />
-          </div>
-          <div>
-            <p className="mb-2 text-[13px] font-semibold tracking-wide text-ink-3 uppercase">Color</p>
-            <ColorPicker value={color} onChange={setColor} label="Work color" />
-          </div>
-          <div className="flex items-center gap-3 pt-1">
-            <ActivityChip name={name.trim() || "Preview"} color={color} size="md" />
-          </div>
-          <button
-            type="button"
-            onClick={archive}
-            disabled={isPending}
-            className="min-h-11 w-full rounded-2xl text-[16px] font-semibold text-danger ring-1 ring-line active:bg-danger-soft"
-          >
-            Archive this work type
-          </button>
+              Archive this work type
+            </button>
+          </fieldset>
         </form>
       )}
     </Sheet>

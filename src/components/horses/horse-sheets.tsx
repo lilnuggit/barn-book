@@ -3,7 +3,7 @@
 import { Archive, ArchiveRestore, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useOffline } from "next/offline";
-import { useRef, useState, useTransition } from "react";
+import { useRef, useState } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import { PALETTE } from "@/lib/palette";
 import { run } from "@/lib/sync";
@@ -23,61 +23,114 @@ function problem(result: SyncResult): string | null {
   return null; // signed out: the app is taking you to sign in
 }
 
+/**
+ * Each opening of a sheet is a session. A save that finishes after its sheet
+ * was closed (or closed and opened again) must not close or reset the new one.
+ */
+function useSheetSession() {
+  const current = useRef(0);
+  const [openSession, setOpenSession] = useState(0);
+  const [busySession, setBusySession] = useState<number | null>(null);
+  return {
+    current,
+    busy: busySession !== null && busySession === openSession,
+    begin() {
+      current.current += 1;
+      setOpenSession(current.current);
+    },
+    end() {
+      current.current += 1;
+    },
+    async send(call: () => Promise<SyncResult>): Promise<{ result: SyncResult; stillOpen: boolean }> {
+      const s = current.current;
+      setBusySession(s);
+      const result = await call();
+      setBusySession((b) => (b === s ? null : b));
+      return { result, stillOpen: s === current.current };
+    },
+  };
+}
+
+function busyCloseMessage(offline: boolean) {
+  return offline ? "No signal — your changes will save when you’re back online" : "Still saving your changes…";
+}
+
 export function AddHorseButton() {
   const offline = useOffline();
+  const session = useSheetSession();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [color, setColor] = useState<string>(PALETTE[0]);
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
-  // One id per new horse, so tapping Save twice can't create it twice.
-  const draftId = useRef<string | null>(null);
+  // Saving the same name and color again reuses the id (so a double tap or a
+  // retry can't create two horses); anything different is a new horse.
+  const draft = useRef<{ id: string; content: string } | null>(null);
+
+  function openSheet() {
+    session.begin();
+    setError(null);
+    setOpen(true);
+  }
+
+  function close() {
+    if (session.busy) toast(busyCloseMessage(offline));
+    session.end();
+    setOpen(false);
+  }
+
+  function finish() {
+    draft.current = null;
+    setName("");
+    setError(null);
+    setColor(PALETTE[(PALETTE.indexOf(color as (typeof PALETTE)[number]) + 1) % PALETTE.length]);
+    session.end();
+    setOpen(false);
+  }
 
   function save() {
     const trimmed = name.trim();
-    if (!trimmed || isPending) return;
-    draftId.current ??= crypto.randomUUID();
-    const horse = { id: draftId.current, name: trimmed, color };
-    const result = run("createHorse", [horse], { key: `horse:${horse.id}`, meta: horse });
-
-    function reset() {
-      draftId.current = null;
-      setName("");
-      setError(null);
-      setColor(PALETTE[(PALETTE.indexOf(color as (typeof PALETTE)[number]) + 1) % PALETTE.length]);
-      setOpen(false);
-    }
+    if (!trimmed || session.busy) return;
+    const content = `${trimmed}|${color}`;
+    if (draft.current?.content !== content) draft.current = { id: crypto.randomUUID(), content };
+    const horse = { id: draft.current.id, name: trimmed, color };
+    const sending = run("createHorse", [horse], { key: `horse:${horse.id}`, meta: horse });
 
     if (offline) {
-      // Saved on the phone; it'll appear in the list once it syncs.
-      reset();
+      // Saved on the phone; it shows up once it syncs.
+      finish();
       toast(`${trimmed} will be added when you’re back online`);
       return;
     }
-    startTransition(async () => {
-      const r = await result;
-      const message = problem(r);
-      if (message) return setError(message);
-      if (r.ok) {
-        reset();
-        toast(`Added ${trimmed}`);
-      }
-    });
+    void session
+      .send(() => sending)
+      .then(({ result, stillOpen }) => {
+        if (result.ok || result.reason === "failed") {
+          // "failed" is still saved on the phone and retried automatically.
+          if (stillOpen) finish();
+          else draft.current = null;
+          toast(result.ok ? `Added ${trimmed}` : `${trimmed} is saved on this phone and will be added when it syncs`);
+          return;
+        }
+        const message = problem(result);
+        if (message && stillOpen) setError(message);
+        else if (message) toast(message);
+      });
   }
 
   return (
     <>
-      <button type="button" onClick={() => setOpen(true)} className={headerButtonClass}>
+      <button type="button" onClick={openSheet} className={headerButtonClass}>
         <Plus className="size-4" strokeWidth={2.5} /> Add horse
       </button>
       <Sheet
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={close}
         title="New horse"
         onSave={save}
-        saveLabel={isPending ? "Saving…" : "Save"}
-        saveDisabled={!name.trim() || isPending}
+        saveLabel={session.busy ? "Saving…" : "Save"}
+        saveDisabled={!name.trim() || session.busy}
         dirty={name.trim().length > 0}
+        busy={session.busy}
       >
         <form
           onSubmit={(e) => {
@@ -119,16 +172,18 @@ export function EditHorseButton({
   horse: { id: string; name: string; color: string; notes: string; archived: boolean; entryCount: number };
 }) {
   const router = useRouter();
+  const offline = useOffline();
+  const session = useSheetSession();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(horse.name);
   const [color, setColor] = useState(horse.color);
   const [notes, setNotes] = useState(horse.notes);
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
 
   const dirty = name !== horse.name || color !== horse.color || notes !== horse.notes;
 
   function openSheet() {
+    session.begin();
     setName(horse.name);
     setColor(horse.color);
     setNotes(horse.notes);
@@ -136,49 +191,58 @@ export function EditHorseButton({
     setOpen(true);
   }
 
-  function save() {
-    if (!name.trim() || isPending) return;
-    startTransition(async () => {
-      const result = await run("updateHorse", [{ id: horse.id, name, color, notes }], { persist: false });
+  function close() {
+    if (session.busy) toast(busyCloseMessage(offline));
+    session.end();
+    setOpen(false);
+  }
+
+  /** Sends a change; reports the outcome in the sheet if it's still open, else as a toast. */
+  function submit(call: () => Promise<SyncResult>, done: string, after?: () => void) {
+    if (session.busy) return;
+    void session.send(call).then(({ result, stillOpen }) => {
       const message = problem(result);
-      if (message) return setError(message);
-      if (result.ok) {
-        setOpen(false);
-        toast("Saved");
+      if (message) {
+        if (stillOpen) setError(message);
+        else toast(message);
+        return;
       }
+      if (!result.ok) return;
+      if (stillOpen) {
+        session.end();
+        setOpen(false);
+      }
+      toast(done);
+      after?.();
     });
+  }
+
+  function save() {
+    if (!name.trim()) return;
+    submit(() => run("updateHorse", [{ id: horse.id, name, color, notes }], { persist: false }), "Saved");
   }
 
   function toggleArchive() {
-    if (isPending) return;
-    startTransition(async () => {
-      const result = await run("setHorseArchived", [horse.id, !horse.archived], { persist: false });
-      const message = problem(result);
-      if (message) return setError(message);
-      if (result.ok) {
-        setOpen(false);
-        toast(horse.archived ? `${horse.name} is back in work` : `${horse.name} archived`);
-      }
-    });
+    submit(
+      () => run("setHorseArchived", [horse.id, !horse.archived], { persist: false }),
+      horse.archived ? `${horse.name} is back in work` : `${horse.name} archived`,
+    );
   }
 
   function remove() {
-    if (isPending) return;
     const what =
       horse.entryCount > 0
         ? `Delete ${horse.name} and all ${horse.entryCount} logged ${horse.entryCount === 1 ? "entry" : "entries"}? This can’t be undone.`
         : `Delete ${horse.name}?`;
     if (!window.confirm(what)) return;
-    startTransition(async () => {
-      const result = await run("deleteHorse", [horse.id], { persist: false });
-      const message = problem(result);
-      if (message) return setError(message);
-      if (result.ok) {
-        setOpen(false);
-        toast(`Deleted ${horse.name}`);
-        router.replace("/horses");
-      }
-    });
+    submit(
+      () => run("deleteHorse", [horse.id], { persist: false }),
+      `Deleted ${horse.name}`,
+      () => {
+        // Leave the deleted horse's page, but don't pull the user off another one.
+        if (window.location.pathname === `/horses/${horse.id}`) router.replace("/horses");
+      },
+    );
   }
 
   return (
@@ -188,14 +252,15 @@ export function EditHorseButton({
       </button>
       <Sheet
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={close}
         title={`Edit ${horse.name}`}
         onSave={save}
-        saveLabel={isPending ? "Saving…" : "Save"}
-        saveDisabled={!name.trim() || isPending}
+        saveLabel={session.busy ? "Saving…" : "Save"}
+        saveDisabled={!name.trim() || session.busy}
         dirty={dirty}
+        busy={session.busy}
       >
-        <div className="space-y-5">
+        <fieldset disabled={session.busy} className="space-y-5">
           <SheetError message={error} />
           <div>
             <label htmlFor="edit-horse-name" className={labelClass}>
@@ -232,7 +297,6 @@ export function EditHorseButton({
           <div className="space-y-1 border-t border-line pt-3">
             <button
               type="button"
-              disabled={isPending}
               onClick={toggleArchive}
               className="flex w-full items-center gap-3 rounded-xl px-1 py-2.5 text-left text-[16px] font-medium text-ink active:bg-surface-2"
             >
@@ -252,14 +316,13 @@ export function EditHorseButton({
             </button>
             <button
               type="button"
-              disabled={isPending}
               onClick={remove}
               className="flex min-h-11 w-full items-center gap-3 rounded-xl px-1 py-2.5 text-left text-[16px] font-medium text-danger active:bg-danger-soft"
             >
               <Trash2 className="size-5" /> Delete horse and history
             </button>
           </div>
-        </div>
+        </fieldset>
       </Sheet>
     </>
   );

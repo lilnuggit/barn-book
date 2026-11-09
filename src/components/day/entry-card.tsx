@@ -16,6 +16,7 @@ export function EntryCard({
   activityById,
   expanded,
   waiting,
+  noteSyncing,
   onToggleExpanded,
   onStatus,
   onNote,
@@ -28,6 +29,8 @@ export function EntryCard({
   expanded: boolean;
   /** Has changes saved on the phone that haven't reached the server yet. */
   waiting: boolean;
+  /** A note for this entry is still waiting on the phone. */
+  noteSyncing: boolean;
   onToggleExpanded: () => void;
   onStatus: (status: EntryStatus) => void;
   onNote: (note: string) => Promise<SyncResult>;
@@ -92,7 +95,7 @@ export function EntryCard({
 
       {expanded && (
         <div className="space-y-4 border-t border-line px-4 pt-3 pb-4">
-          <NoteField initial={entry.note} onSave={onNote} />
+          <NoteField initial={entry.note} syncing={noteSyncing} onSave={onNote} />
 
           <WorkEditor entry={entry} activities={activities} onActivities={onActivities} />
 
@@ -227,7 +230,16 @@ type NoteStatus = "idle" | "saving" | "saved" | "waiting";
  * lands on the phone first (so it survives a dropped signal or iOS closing the
  * app) and "Saved" only shows once the server has confirmed it.
  */
-function NoteField({ initial, onSave }: { initial: string; onSave: (note: string) => Promise<SyncResult> }) {
+function NoteField({
+  initial,
+  syncing,
+  onSave,
+}: {
+  initial: string;
+  /** Still waiting on the phone; once false, an automatic retry has saved it. */
+  syncing: boolean;
+  onSave: (note: string) => Promise<SyncResult>;
+}) {
   const id = useId();
   const offline = useOffline();
   const [value, setValue] = useState(initial);
@@ -285,9 +297,9 @@ function NoteField({ initial, onSave }: { initial: string; onSave: (note: string
       ? offline
         ? { text: "Saved on this phone — will sync", tone: "text-ink-3" }
         : { text: "Saving…", tone: "text-ink-3" }
-      : status === "waiting"
+      : status === "waiting" && syncing
         ? { text: "Saved on this phone — will sync", tone: "text-ink-3" }
-        : status === "saved"
+        : status === "saved" || status === "waiting"
           ? { text: "Saved", tone: "text-done" }
           : null;
 

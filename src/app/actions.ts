@@ -52,6 +52,15 @@ async function ownedActivityIds(userId: string, ids: string[]) {
   return ids.filter((id) => owned.has(id)); // keep the order they were picked in
 }
 
+/**
+ * Re-renders the current page with fresh data. Used when the app comes back to
+ * the foreground: unlike a plain router refresh it goes through the client
+ * queue, which renews an expired sign-in first instead of bouncing to /sign-in.
+ */
+export async function refreshPage(): Promise<ActionResult> {
+  return write(async () => {});
+}
+
 // ---------- day list ----------
 
 export async function addEntries(input: {

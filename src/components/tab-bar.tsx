@@ -80,12 +80,14 @@ function SyncStatus() {
       {offline ? (
         <>
           <CloudOff className="size-3.5 shrink-0" aria-hidden />
-          No signal — changes are saved on this phone and will sync
+          <span className="min-w-0 truncate">No signal — changes will sync later</span>
         </>
       ) : (
         <>
           <RefreshCw className="size-3.5 shrink-0" aria-hidden />
-          {stuck} {stuck === 1 ? "change hasn’t" : "changes haven’t"} synced yet — retrying
+          <span className="min-w-0 truncate">
+            {stuck} {stuck === 1 ? "change" : "changes"} waiting to sync — retrying
+          </span>
         </>
       )}
     </p>
