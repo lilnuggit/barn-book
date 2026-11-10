@@ -176,12 +176,27 @@ function isItem(value: unknown): value is OutboxItem {
   return Boolean(v) && typeof v.id === "string" && typeof v.name === "string" && v.name in ACTIONS && Array.isArray(v.args);
 }
 
+/**
+ * Changes made by a newer version of the app that this one can't send (the
+ * app was rolled back): kept on the phone as they are, never sent or counted,
+ * so they go out once the newer version is back. Also kept through a sign-out,
+ * which only drops the changes it told the rider about.
+ */
+let foreign: unknown[] = [];
+
+function isForeign(value: unknown): boolean {
+  const v = value as OutboxItem;
+  return Boolean(v) && typeof v.id === "string" && typeof v.name === "string" && !(v.name in ACTIONS) && Array.isArray(v.args);
+}
+
 function stored(): OutboxItem[] {
   if (items === null) {
     if (typeof window === "undefined") return EMPTY;
     try {
       const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
-      items = Array.isArray(parsed) ? parsed.filter(isItem) : [];
+      const all = Array.isArray(parsed) ? parsed : [];
+      items = all.filter(isItem);
+      foreign = all.filter(isForeign);
     } catch {
       items = [];
     }
@@ -197,7 +212,7 @@ function commit(next: OutboxItem[]) {
   items = next;
   if (!next.some((i) => isMine(i))) stuck = false;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...next, ...foreign]));
   } catch {
     // Private mode or full storage: still works for this session.
   }
