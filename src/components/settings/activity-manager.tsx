@@ -6,9 +6,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite } from "@/lib/data";
 import { PALETTE } from "@/lib/palette";
-import { forgetConfirmedBefore, run, useOverlayWrites, type OutboxItem } from "@/lib/sync";
+import { forgetConfirmedBefore, run, useOverlayWrites, usePendingWrites, type OutboxItem } from "@/lib/sync";
 import { ColorPicker } from "../color-picker";
 import { Sheet, SheetError } from "../sheet";
+import { SAVED_OFFLINE, SAVED_ON_PHONE, useStopWaiting } from "../sheet-save";
 import { toast } from "../toast";
 import { ActivityChip, cx, SectionTitle } from "../ui";
 
@@ -18,8 +19,6 @@ import { ActivityChip, cx, SectionTitle } from "../ui";
 const inputClass =
   "w-full rounded-xl bg-surface-2 px-3.5 py-2.5 text-ink placeholder:text-ink-3 focus:bg-surface focus:ring-2 focus:ring-brand/50 focus:outline-none";
 
-const SAVED_ON_PHONE = "Saved on this phone — it’ll sync when it can";
-const SAVED_OFFLINE = "No signal — saved on this phone, it’ll sync when you’re back online";
 const PENDING_PREFIX = "pending:";
 
 function report(result: SyncResult, done?: string) {
@@ -69,7 +68,11 @@ function applyPending(list: ActivityLite[], pending: OutboxItem[]): ActivityLite
 
 export function ActivityManager({ activities: serverActivities }: { activities: ActivityLite[] }) {
   const overlay = useOverlayWrites();
+  const pending = usePendingWrites();
   const activities = useMemo(() => applyPending(serverActivities, overlay), [serverActivities, overlay]);
+  // Added here but not in the page's list yet: still on the phone, or just
+  // confirmed (the list refreshes once the other saves have gone out).
+  const unsynced = useMemo(() => new Set(pending.map((i) => `${PENDING_PREFIX}${i.id}`)), [pending]);
   useEffect(() => forgetConfirmedBefore(Date.now()), [serverActivities]);
   const active = activities.filter((a) => !a.archived);
   const archived = activities.filter((a) => a.archived);
@@ -109,16 +112,19 @@ export function ActivityManager({ activities: serverActivities }: { activities: 
       </SectionTitle>
       <ul className="overflow-hidden rounded-2xl bg-surface shadow-card ring-1 ring-line">
         {active.map((a) => {
-          const waiting = a.id.startsWith(PENDING_PREFIX);
+          const fresh = a.id.startsWith(PENDING_PREFIX);
           const place = movable.indexOf(a);
           return (
             <li key={a.id} className="flex items-center border-b border-line last:border-b-0">
-              {waiting ? (
-                <div className="flex w-full items-center justify-between px-4 py-3">
+              {fresh ? (
+                // Can't be edited or moved until it has its id from the server.
+                <div className="flex min-h-[3.25rem] w-full items-center justify-between px-4 py-3">
                   <ActivityChip name={a.name} color={a.color} size="md" />
-                  <span className="flex items-center gap-1 text-xs font-medium text-ink-3">
-                    <CloudOff className="size-3.5" aria-hidden /> Not synced yet
-                  </span>
+                  {unsynced.has(a.id) && (
+                    <span className="flex items-center gap-1 text-xs font-medium text-ink-3">
+                      <CloudOff className="size-3.5" aria-hidden /> Not synced yet
+                    </span>
+                  )}
                 </div>
               ) : reordering ? (
                 <div className="flex w-full items-center justify-between py-1 pr-1 pl-4">
@@ -158,7 +164,7 @@ export function ActivityManager({ activities: serverActivities }: { activities: 
           );
         })}
         <li>
-          <AddActivityRow nextColor={PALETTE[active.length % PALETTE.length]} />
+          <AddActivityRow nextColor={PALETTE[active.length % PALETTE.length]} existing={activities} />
         </li>
       </ul>
       <p className="mt-2 px-1 text-sm text-ink-3">
@@ -193,23 +199,29 @@ export function ActivityManager({ activities: serverActivities }: { activities: 
   );
 }
 
-function AddActivityRow({ nextColor }: { nextColor: string }) {
+function AddActivityRow({ nextColor, existing }: { nextColor: string; existing: ActivityLite[] }) {
   const offline = useOffline();
   const [name, setName] = useState("");
 
   function add() {
     const trimmed = name.trim();
     if (!trimmed) return;
-    // Clearing the box is what stops a double tap from adding it twice (and
-    // the same name again replaces the copy waiting to go out).
+    // Checked here, not by the server: adding a name that's already there is
+    // a no-op on the server, so a save that's sent twice can't fail.
+    const same = existing.find((a) => a.name.toLowerCase() === trimmed.toLowerCase());
+    if (same && !same.archived) {
+      toast(`“${same.name}” is already on the list`);
+      return;
+    }
+    // Clearing the box is what stops a double tap from adding it twice.
     const sending = run("createActivityType", [{ name: trimmed, color: nextColor }], {
       key: `activity-new:${trimmed.toLowerCase()}`,
     });
     setName(""); // it shows in the list straight away
     if (offline) toast(`${trimmed}: ${SAVED_OFFLINE.toLowerCase()}`);
     void sending.then((result) => {
-      if (result.ok) toast(`Added ${trimmed}`);
-      else if (result.reason === "invalid") toast(result.error);
+      if (result.ok) toast(same ? `${same.name} is back on the list` : `Added ${trimmed}`);
+      else if (result.reason === "invalid") toast(`${trimmed}: ${result.error}`);
     });
   }
 
@@ -280,31 +292,39 @@ function EditActivitySheet({ activity, onClose }: { activity: ActivityLite | nul
 
   const dirty = activity !== null && (name !== startedFrom.name || color !== startedFrom.color);
 
-  function close() {
-    if (busy) toast(SAVED_ON_PHONE);
+  function close(message = SAVED_ON_PHONE) {
+    if (busy) toast(message);
     onClose();
   }
+  useStopWaiting(busy, offline, () => close(offline ? SAVED_OFFLINE : SAVED_ON_PHONE));
 
   function submit(sending: Promise<SyncResult>, done?: string) {
+    const s = openSession;
+    const was = activity?.name ?? "";
     if (offline) {
       onClose();
       toast(SAVED_OFFLINE);
-      return;
+    } else {
+      setBusySession(s);
     }
-    const s = openSession;
-    setBusySession(s);
     void sending.then((result) => {
       setBusySession((b) => (b === s ? null : b));
-      const stillOpen = s === session.current;
+      const stillOpen = !offline && s === session.current;
       if (!result.ok && result.reason === "invalid") {
+        // Refused (e.g. the name is taken): in the sheet if it's still open,
+        // otherwise as a message, even if it was saved with no signal.
         if (stillOpen) setError(result.error);
-        else toast(result.error);
+        else toast(`${was}: ${result.error}`);
         return;
       }
-      if (!result.ok && result.reason === "signed-out") return; // the app is going to sign-in
-      if (stillOpen) onClose();
-      if (!result.ok) toast(SAVED_ON_PHONE);
-      else if (done) toast(done);
+      // Signed out: the app is going to sign-in. Replaced: a newer save reports.
+      if (!result.ok && result.reason !== "failed") return;
+      if (stillOpen) {
+        onClose();
+        toast(result.ok ? (done ?? "Saved") : SAVED_ON_PHONE);
+      } else if (result.ok && done) {
+        toast(done); // the sheet was closed while it went out: say when it lands
+      }
     });
   }
 

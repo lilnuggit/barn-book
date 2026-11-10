@@ -54,10 +54,12 @@ export function Sheet({
   // A modal <dialog> blocks the whole page. If this sheet's screen is hidden
   // (Next keeps recent screens mounted but hidden) or removed while it's open,
   // close it so it can't linger as an invisible layer that swallows every tap.
-  // It reopens when the screen shows again, since effects re-run then.
+  // That's not the rider closing it, so the parent isn't told (its draft is
+  // kept), and it opens again when the screen shows again, as effects re-run.
   useLayoutEffect(() => {
     const dialog = ref.current;
     return () => {
+      openRef.current = false;
       if (dialog?.open) dialog.close();
     };
   }, []);
@@ -76,8 +78,9 @@ export function Sheet({
       aria-label={title}
       onClose={() => {
         // Fired after every close, including ours; only report closes the
-        // parent doesn't know about yet (so it isn't told twice).
-        if (openRef.current) onClose();
+        // parent doesn't know about yet (so it isn't told twice), and not one
+        // that's stale because the sheet has been opened again since.
+        if (openRef.current && !ref.current?.open) onClose();
       }}
       onCancel={(e) => {
         e.preventDefault(); // Escape: same rules as Cancel

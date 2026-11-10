@@ -1,20 +1,30 @@
 "use client";
 
 import { CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Copy, Loader2, Plus } from "lucide-react";
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
 import { useOffline } from "next/offline";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type MouseEvent } from "react";
 import type { EntryStatus } from "@/db/schema";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite, CopySuggestion, DayEntry, HorseLite } from "@/lib/data";
-import { addDays, daysBetween, formatLong, formatShort, isISODate, relativeDayName } from "@/lib/dates";
+import {
+  addDays,
+  daysBetween,
+  formatLong,
+  formatShort,
+  isISODate,
+  relativeDayName,
+  todayInTimeZone,
+} from "@/lib/dates";
 import {
   forgetConfirmedBefore,
   notePageChange,
+  refreshWhenPossible,
   run,
   useOverlayWrites,
   usePendingWrites,
+  useSyncStuck,
   type OutboxItem,
 } from "@/lib/sync";
 import { HorseshoeMark } from "../icons";
@@ -65,13 +75,12 @@ function applyPending(entries: DayEntry[], pending: OutboxItem[], date: string):
 }
 
 /**
- * Entries with changes stuck on the phone: no signal, or the server didn't
- * answer. Changes go strictly in order, so once one has failed, everything
- * behind it is waiting too.
+ * Entries with changes stuck on the phone: no signal, or they can't get
+ * through (the server didn't answer, sign-in isn't ready). Changes go strictly
+ * in order, so while the first is stuck, everything behind it is waiting too.
  */
-function waitingEntryIds(pending: OutboxItem[], offline: boolean): Set<string> {
+function waitingEntryIds(pending: OutboxItem[], stuck: boolean): Set<string> {
   const ids = new Set<string>();
-  const stuck = offline || pending.some((i) => i.attempts > 0);
   if (!stuck) return ids;
   for (const item of pending) {
     if (item.name === "addEntries") {
@@ -83,6 +92,30 @@ function waitingEntryIds(pending: OutboxItem[], offline: boolean): Set<string> {
   return ids;
 }
 
+function subscribeToClock(onChange: () => void) {
+  const timer = setInterval(onChange, 30_000);
+  document.addEventListener("visibilitychange", onChange);
+  return () => {
+    clearInterval(timer);
+    document.removeEventListener("visibilitychange", onChange);
+  };
+}
+
+/**
+ * The phone's own date. The server's "today" is from when the page loaded; an
+ * app left open overnight would otherwise call yesterday "Today" until it can
+ * reach the server again.
+ */
+function usePhoneToday(serverToday: string) {
+  return useSyncExternalStore(
+    subscribeToClock,
+    () => todayInTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone),
+    () => serverToday,
+  );
+}
+
+const NO_SIGNAL_DAYS = "No signal — other days load once you’re back online";
+
 function report(result: SyncResult) {
   if (!result.ok && result.reason === "invalid") toast(result.error);
 }
@@ -91,6 +124,14 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
   const pending = usePendingWrites();
   const overlay = useOverlayWrites();
   const offline = useOffline();
+  const stuck = useSyncStuck();
+  // Labels ("Today", "Yesterday") follow the phone's date. If the day has
+  // moved on since this page loaded, get the new day's list once there's signal.
+  const now = usePhoneToday(today);
+  const newDay = now > today;
+  useEffect(() => {
+    if (newDay) refreshWhenPossible();
+  }, [newDay]);
   // Changes show instantly: each one is stored on the phone the moment it's
   // made, and the screen is drawn from the server's data plus those changes.
   // (Deliberately no transition per save: a pending one would hold up every
@@ -102,7 +143,7 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const activityById = useMemo(() => new Map(activities.map((a) => [a.id, a])), [activities]);
-  const waiting = useMemo(() => waitingEntryIds(pending, offline), [pending, offline]);
+  const waiting = useMemo(() => waitingEntryIds(pending, offline || stuck), [pending, offline, stuck]);
   const notesSyncing = useMemo(
     () => new Set(pending.filter((i) => i.name === "saveEntryNote").map((i) => i.args[0] as string)),
     [pending],
@@ -136,7 +177,16 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
 
   return (
     <>
-      <DayHeader date={date} today={today} locale={locale} done={done} total={entries.length} />
+      <DayHeader
+        date={date}
+        today={today}
+        now={now}
+        locale={locale}
+        done={done}
+        total={entries.length}
+        offline={offline}
+        newDay={newDay && date === today}
+      />
 
       <div className="mx-auto max-w-xl px-4 pt-4 pb-20">
         {entries.length === 0 && copying ? (
@@ -146,7 +196,7 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
             <p className="mt-1 text-[15px] text-ink-2">
               {offline
                 ? "It’s saved on this phone and will appear when you’re back online."
-                : pending.some((i) => i.attempts > 0)
+                : stuck
                   ? "It’s saved on this phone and will appear once it syncs."
                   : "Just a moment."}
             </p>
@@ -154,7 +204,7 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
         ) : entries.length === 0 ? (
           <EmptyDay
             date={date}
-            today={today}
+            today={now}
             locale={locale}
             hasHorses={horses.length > 0}
             suggestions={suggestions}
@@ -206,7 +256,7 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
       <AddSheet
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
-        title={`Add to ${relativeDayName(date, today, locale) === "Today" ? "today" : formatShort(date, locale)}`}
+        title={`Add to ${relativeDayName(date, now, locale) === "Today" ? "today" : formatShort(date, locale)}`}
         horses={horses}
         activities={activities}
         horseIdsOnDay={new Set(entries.map((e) => e.horseId))}
@@ -216,21 +266,42 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
   );
 }
 
+/** Shows that a tap on a day arrow registered while the next day is still loading. */
+function LoadingHint() {
+  const { pending } = useLinkStatus();
+  if (!pending) return null;
+  return (
+    <span
+      aria-hidden
+      className="absolute inset-0 animate-[fade-in_0.2s_ease-out_0.3s_backwards] rounded-full ring-2 ring-header-ink/70"
+    />
+  );
+}
+
 function DayHeader({
   date,
   today,
+  now,
   locale,
   done,
   total,
+  offline,
+  newDay,
 }: {
   date: string;
+  /** The server's today, when the page loaded (its list is at "/"). */
   today: string;
+  /** The phone's today, for the labels. */
+  now: string;
   locale: string;
   done: number;
   total: number;
+  offline: boolean;
+  /** This is the list the page loaded as today, and the phone has moved on to the next day. */
+  newDay: boolean;
 }) {
   const router = useRouter();
-  const offset = daysBetween(today, date);
+  const offset = daysBetween(now, date);
   const eyebrow =
     offset === 0
       ? "Today"
@@ -242,22 +313,32 @@ function DayHeader({
             ? `${-offset} days ago`
             : `In ${offset} days`;
   const href = (d: string) => (d === today ? "/" : `/?d=${d}`);
-  const round = "grid size-10 place-items-center rounded-full bg-header-fill active:opacity-70";
+  const round = "relative grid size-10 place-items-center rounded-full bg-header-fill active:opacity-70";
+  // Another day needs the server; with no signal the tap would only take
+  // effect (suddenly) once the signal is back. Say so instead.
+  function stayOffline(e: MouseEvent) {
+    if (!offline) return;
+    e.preventDefault(); // Next's Link then doesn't navigate…
+    e.stopPropagation(); // …and the save queue doesn't wait for a page change
+    toast(NO_SIGNAL_DAYS);
+  }
 
   return (
     <header className="bg-header pt-safe text-header-ink">
       <div className="mx-auto max-w-xl px-4 pt-2 pb-5">
         <div className="flex min-h-11 items-center justify-between gap-2">
-          <Link href={href(addDays(date, -1))} aria-label="Previous day" className={round}>
+          <Link href={href(addDays(date, -1))} onClick={stayOffline} aria-label="Previous day" className={round}>
             <ChevronLeft className="size-6" />
+            <LoadingHint />
           </Link>
           {offset !== 0 && (
-            <Link href="/" className={headerButtonClass}>
+            <Link href={href(now)} onClick={stayOffline} className={headerButtonClass}>
               Back to today
             </Link>
           )}
-          <Link href={href(addDays(date, 1))} aria-label="Next day" className={round}>
+          <Link href={href(addDays(date, 1))} onClick={stayOffline} aria-label="Next day" className={round}>
             <ChevronRight className="size-6" />
+            <LoadingHint />
           </Link>
         </div>
 
@@ -274,12 +355,22 @@ function DayHeader({
             onClick={(e) => e.currentTarget.showPicker?.()}
             onChange={(e) => {
               if (!isISODate(e.target.value)) return;
+              if (offline) {
+                toast(NO_SIGNAL_DAYS);
+                return;
+              }
               notePageChange(href(e.target.value));
               router.push(href(e.target.value));
             }}
             className="absolute inset-0 cursor-pointer opacity-0"
           />
         </div>
+        {newDay && (
+          <p role="status" className="mt-2 rounded-xl bg-header-fill px-3 py-2 text-[14px] text-header-ink">
+            It’s a new day.{" "}
+            {offline ? "Today’s list will load once you’re back online." : "Loading today’s list…"}
+          </p>
+        )}
 
         {total > 0 && (
           <div className="mt-4 flex items-center gap-3">

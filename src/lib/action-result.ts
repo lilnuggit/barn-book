@@ -8,5 +8,10 @@ export type ActionResult =
   | { ok: false; reason: "signed-out" }
   | { ok: false; reason: "invalid"; error: string };
 
-/** Client-side outcome. "failed": not confirmed yet (kept on the phone and retried, if stored). */
-export type SyncResult = ActionResult | { ok: false; reason: "failed" };
+/**
+ * Client-side outcome.
+ * - "failed": not confirmed yet (kept on the phone and retried, if stored).
+ * - "replaced": a newer change to the same thing took its place before it was
+ *   sent; that one reports what happened, so there's nothing to say here.
+ */
+export type SyncResult = ActionResult | { ok: false; reason: "failed" } | { ok: false; reason: "replaced" };

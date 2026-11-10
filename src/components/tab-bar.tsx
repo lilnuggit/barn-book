@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSelectedLayoutSegment } from "next/navigation";
 import { useOffline } from "next/offline";
 import { Suspense } from "react";
-import { usePendingWrites } from "@/lib/sync";
+import { usePendingWrites, useSyncStuck } from "@/lib/sync";
 import { HorseshoeIcon } from "./icons";
 import { cx } from "./ui";
 
@@ -62,12 +62,12 @@ function TabBarView({ active }: { active: string | null | undefined }) {
   );
 }
 
-/** A slim line above the tabs: no signal, or changes that haven't synced yet. */
+/** A slim line above the tabs: no signal, or changes that can't get through yet. */
 function SyncStatus() {
   const offline = useOffline();
   const pending = usePendingWrites();
-  // Changes go strictly in order: once one has failed, everything behind it waits too.
-  const stuck = pending.some((i) => i.attempts > 0) ? pending.length : 0;
+  // Changes go strictly in order: while the first can't get through, everything behind it waits too.
+  const stuck = useSyncStuck() ? pending.length : 0;
 
   if (!offline && stuck === 0) return null;
   return (

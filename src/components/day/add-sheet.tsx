@@ -4,7 +4,7 @@ import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ActivityLite, HorseLite } from "@/lib/data";
 import { PALETTE } from "@/lib/palette";
-import { run, usePendingWrites } from "@/lib/sync";
+import { run, useOverlayWrites } from "@/lib/sync";
 import { Sheet } from "../sheet";
 import { toast } from "../toast";
 import { ToggleChip } from "../toggle-chip";
@@ -33,15 +33,17 @@ export function AddSheet({
   const [created, setCreated] = useState<HorseLite[]>([]);
   const [newName, setNewName] = useState("");
   const [showNewHorse, setShowNewHorse] = useState(false);
-  const pending = usePendingWrites();
+  // Changes still on the phone, plus ones just confirmed that the page's list
+  // doesn't include yet (it refreshes once the other saves have gone out).
+  const overlay = useOverlayWrites();
 
-  // Horses added here (or still waiting on the phone to sync) show up right away.
+  // Horses added here (or still on their way to the server) show up right away.
   const allHorses = useMemo(() => {
-    const waiting = pending.filter((i) => i.name === "createHorse").map((i) => i.meta as HorseLite);
+    const waiting = overlay.filter((i) => i.name === "createHorse").map((i) => i.meta as HorseLite);
     const byId = new Map<string, HorseLite>();
     for (const h of [...horses, ...waiting, ...created]) if (h && !byId.has(h.id)) byId.set(h.id, h);
     return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-  }, [horses, created, pending]);
+  }, [horses, created, overlay]);
 
   const addingFirstHorse = allHorses.length === 0;
   const newHorseOpen = showNewHorse || addingFirstHorse;

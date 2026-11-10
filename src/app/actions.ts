@@ -225,6 +225,11 @@ export async function deleteHorse(id: string): Promise<ActionResult> {
 
 // ---------- activity types ----------
 
+/**
+ * Adds a type of work, or brings back an archived one with that name. If it's
+ * already on the list there's nothing to do: the phone checks for that before
+ * sending, so this is a save that arrived twice (a dropped answer is resent).
+ */
 export async function createActivityType(input: { name: string; color: string }): Promise<ActionResult> {
   return write(async (userId) => {
     const name = cleanText(input?.name, NAME_MAX);
@@ -235,9 +240,7 @@ export async function createActivityType(input: { name: string; color: string })
       .select()
       .from(activityTypes)
       .where(and(eq(activityTypes.userId, userId), sql`lower(${activityTypes.name}) = lower(${name})`));
-    if (existing && existing.archivedAt === null) {
-      throw new ValidationError(`“${existing.name}” is already on the list`);
-    }
+    if (existing && existing.archivedAt === null) return;
 
     const [{ max }] = await db
       .select({ max: sql<number>`coalesce(max(${activityTypes.sortOrder}), -1)::int` })

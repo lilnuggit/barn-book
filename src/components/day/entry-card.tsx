@@ -314,6 +314,7 @@ function NoteField({
         placeholder="How did it go? What did you work on?"
         onChange={(e) => {
           setValue(e.target.value);
+          setSent(false); // new text isn't saved yet: no "Saved" until it is
           clearTimeout(timer.current);
           timer.current = setTimeout(flush, 900);
         }}

@@ -155,6 +155,12 @@ export async function renewSession(force = false): Promise<Renewal> {
 // ---------- the stored outbox ----------
 
 let items: OutboxItem[] | null = null;
+/**
+ * Waiting changes can't go out right now: the last try failed, sign-in isn't
+ * ready, or the rider is signed out. Screens say so (strip, "Not synced yet")
+ * until a save gets through, rather than going by attempt counts.
+ */
+let stuck = false;
 /** Changes the server just confirmed, still layered on screen until the page data catches up. */
 let recent: { item: OutboxItem; at: number }[] = [];
 const listeners = new Set<() => void>();
@@ -183,6 +189,7 @@ function emit() {
 
 function commit(next: OutboxItem[]) {
   items = next;
+  if (!next.some((i) => isMine(i))) stuck = false;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
@@ -233,6 +240,17 @@ function overlaySnapshot(): OutboxItem[] {
     overlayCache = { from, recent, me, value: [...recent.map((r) => r.item), ...pendingSnapshot()] };
   }
   return overlayCache.value;
+}
+
+function setStuck(value: boolean) {
+  if (stuck === value) return;
+  stuck = value;
+  emit();
+}
+
+/** Waiting changes can't get through right now (see `stuck`). */
+export function useSyncStuck(): boolean {
+  return useSyncExternalStore(subscribe, () => stuck, () => false);
 }
 
 /** Changes saved on this phone (for this account) that the server hasn't confirmed yet. */
@@ -290,7 +308,7 @@ export function discard(ids: string[]) {
  * a page change that's under way land first (waiting a few seconds at most).
  */
 
-let movingTo: { url: string; since: number } | null = null;
+let movingTo: { url: string; from: string } | null = null;
 let watchingPageChanges = false;
 
 function isCurrentPage(url: string) {
@@ -300,11 +318,16 @@ function isCurrentPage(url: string) {
 
 /** Call when the app starts a page change itself (router.push / replace). */
 export function notePageChange(url: string) {
-  if (typeof window === "undefined" || isCurrentPage(url)) return;
-  movingTo = { url: new URL(url, window.location.href).href, since: Date.now() };
+  if (typeof window === "undefined") return;
+  // Going to the page you're on cancels a page change that's still loading
+  // (Next keeps only the newest), so there's then nothing to wait for.
+  movingTo = isCurrentPage(url) ? null : { url: new URL(url, window.location.href).href, from: window.location.href };
 }
 
-/** Links: by the time a click bubbles up to the document, Next has claimed the ones it navigates. */
+/**
+ * Links and search forms: by the time the event bubbles up to the document,
+ * Next has claimed (preventDefault) the ones it turns into a page change.
+ */
 function watchPageChanges() {
   if (watchingPageChanges || typeof document === "undefined") return;
   watchingPageChanges = true;
@@ -315,10 +338,27 @@ function watchPageChanges() {
     if (link.origin !== window.location.origin || (link.target && link.target !== "_self")) return;
     notePageChange(link.href);
   });
+  document.addEventListener("submit", (e) => {
+    // next/form (History search): a GET form with an action. The app's other
+    // forms have no action and never change page.
+    const form = e.target;
+    if (!e.defaultPrevented || !(form instanceof HTMLFormElement)) return;
+    const action = form.getAttribute("action");
+    if (action === null || form.method.toLowerCase() !== "get") return;
+    const url = new URL(action, window.location.href);
+    for (const [name, value] of new FormData(form)) if (typeof value === "string") url.searchParams.append(name, value);
+    notePageChange(url.href);
+  });
+  // Back/forward: Next restores the page at once; whatever was loading is moot.
+  window.addEventListener("popstate", () => {
+    movingTo = null;
+  });
 }
 
+/** Waits (15 s at most, from now) while a page change is still loading. */
 async function pageChangeLanded(ms = 15_000) {
-  while (movingTo && !isCurrentPage(movingTo.url) && Date.now() - movingTo.since < ms) {
+  const start = Date.now();
+  while (movingTo && window.location.href === movingTo.from && Date.now() - start < ms) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   movingTo = null;
@@ -358,7 +398,7 @@ export function run<N extends ActionName>(
     let next = stored();
     if (key) {
       const replaced = next.filter((i) => i.key === key && !started.has(i.id) && isMine(i));
-      for (const old of replaced) settle(old.id, { ok: true });
+      for (const old of replaced) settle(old.id, { ok: false, reason: "replaced" });
       next = next.filter((i) => !replaced.includes(i));
     }
     commit([...next, item]);
@@ -442,23 +482,27 @@ async function send(item: OutboxItem): Promise<ActionResult> {
   return result;
 }
 
-/** After a change didn't go through: drop it if a newer change replaces it, else hold the queue. */
-function hold(item: OutboxItem) {
+/**
+ * After a change didn't go through: drop it if a newer change replaces it
+ * (returns true), else hold the queue.
+ */
+function hold(item: OutboxItem): boolean {
   const sameAccount = (i: OutboxItem) => (i.userId ?? null) === (item.userId ?? null);
   if (item.key !== undefined && stored().some((i) => i.key === item.key && i.id !== item.id && sameAccount(i))) {
     commit(stored().filter((i) => i.id !== item.id));
-    return;
+    return true;
   }
   blocked = true;
+  return false;
 }
 
 async function process(id: string): Promise<void> {
   const isTransient = transient.has(id);
   const item = transient.get(id) ?? stored().find((i) => i.id === id);
   if (!item) {
-    // Replaced by a newer write, cancelled, or already sent.
+    // Replaced by a newer write or discarded (already settled), or already sent.
     scheduled.delete(id);
-    settle(id, { ok: true });
+    settle(id, { ok: false, reason: "replaced" });
     return;
   }
 
@@ -473,8 +517,10 @@ async function process(id: string): Promise<void> {
       await waitForClerk(); // usually just a moment after the page loads
       if (currentUser() === undefined) {
         // Sign-in still loading: hold everything, in order, and go again as
-        // soon as it's ready. Not a failure, so no back-off.
+        // soon as it's ready. Not a failure, so no back-off; but nothing can
+        // go out meanwhile, so say so.
         blocked = true;
+        setStuck(true);
         scheduled.delete(id);
         settle(id, { ok: false, reason: "failed" });
         replayWhenClerkLoads();
@@ -487,6 +533,7 @@ async function process(id: string): Promise<void> {
       // another device). Everything stays on the phone, in order, and goes
       // out once the rider signs back in.
       blocked = true;
+      setStuck(true);
       scheduled.delete(id);
       if (clerkSaysSignedOut()) {
         settle(id, { ok: false, reason: "signed-out" });
@@ -526,8 +573,12 @@ async function process(id: string): Promise<void> {
       if (renewal === "unknown") throw new Error("Couldn't renew the sign-in");
       // Really signed out (e.g. the weekly sign-in expired). The change stays
       // saved on the phone and goes out after signing back in.
-      if (isTransient) transient.delete(id);
-      else hold(item);
+      if (isTransient) {
+        transient.delete(id);
+      } else {
+        hold(item);
+        setStuck(true);
+      }
       settle(id, result);
       goToSignIn();
       return;
@@ -537,6 +588,7 @@ async function process(id: string): Promise<void> {
       transient.delete(id);
     } else {
       commit(stored().filter((i) => i.id !== id));
+      setStuck(false); // the server answered
       if (result.ok) {
         remember(item);
         refreshWanted = false; // saves refresh the page too
@@ -546,13 +598,15 @@ async function process(id: string): Promise<void> {
   } catch (error) {
     console.error(error);
     if (unstable_isUnrecognizedActionError(error)) reloadForNewVersion();
+    let dropped = false;
     if (isTransient) {
       transient.delete(id);
     } else {
       commit(stored().map((i) => (i.id === id ? { ...i, attempts: i.attempts + 1 } : i)));
-      hold(item);
+      dropped = hold(item);
+      setStuck(true);
     }
-    settle(id, { ok: false, reason: "failed" });
+    settle(id, dropped ? { ok: false, reason: "replaced" } : { ok: false, reason: "failed" });
     scheduleRetry();
   } finally {
     started.delete(id);
