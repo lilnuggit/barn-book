@@ -105,23 +105,38 @@ export async function addEntries(input: {
   });
 }
 
+/** A time from the phone, if it's a plausible one (anything else is ignored). */
+function phoneTime(value: unknown): Date | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value >= Date.UTC(2000, 0, 1) && value < Date.UTC(10000, 0, 1) ? new Date(value) : null;
+}
+
 /**
  * `finishedAt` is when she checked it off or skipped it, by the phone's clock
  * (it may reach the server much later): it decides the horse's place at the
  * bottom of the day's list. Changes queued by older versions of the app don't
- * send it; then the first time it's finished counts.
+ * have it; the phone then sends when the change was made (`madeAt`), which
+ * counts unless the horse was already finished.
  */
-export async function setEntryStatus(id: string, status: EntryStatus, finishedAt?: number | null): Promise<ActionResult> {
+export async function setEntryStatus(
+  id: string,
+  status: EntryStatus,
+  finishedAt?: number | null,
+  madeAt?: number,
+): Promise<ActionResult> {
   return write(async (userId) => {
     assertUUID(id);
     if (!["planned", "done", "skipped"].includes(status)) throw new ValidationError("Invalid status");
-    const at = typeof finishedAt === "number" && Number.isFinite(finishedAt) && finishedAt > 0 ? new Date(finishedAt) : null;
+    const at = phoneTime(finishedAt);
+    const made = phoneTime(madeAt);
     await db
       .update(entries)
       .set({
         status,
         completedAt:
-          status === "planned" ? null : at && !Number.isNaN(at.getTime()) ? at : sql`coalesce(${entries.completedAt}, now())`,
+          status === "planned"
+            ? null
+            : (at ?? sql`coalesce(${entries.completedAt}, ${made ? made.toISOString() : sql`now()`}::timestamptz)`),
       })
       .where(and(eq(entries.id, id), eq(entries.userId, userId)));
   });

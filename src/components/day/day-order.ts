@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import type { DayEntry } from "@/lib/data";
 
 /**
@@ -17,43 +17,53 @@ export function orderForToday(entries: DayEntry[], held: string | null): DayEntr
   return [...toDo, ...finished];
 }
 
+function cardsOf(ul: HTMLUListElement): HTMLElement[] {
+  return [...ul.querySelectorAll<HTMLElement>(":scope > [data-entry]")];
+}
+
 /**
- * Slides cards to their new places when the order changes (a horse going down
- * after it's checked off, or back up when it's unchecked), so it's clear where
- * it went. Returns the ref for the list; its cards carry data-entry ids.
+ * Slides cards to their new places when she changes the order (a horse going
+ * down after it's checked off, or back up when it's unchecked), so it's clear
+ * where it went. Returns the list's ref and `before`: call `before(id)` in the handler, just before the change: it
+ * notes where every card is on screen right then (mid-slide included), and the
+ * card she tapped (`id`) is kept under her finger. Changes that don't come
+ * from her (data from the server) don't slide.
  */
-export function useCardMoves(order: string[]) {
+export function useCardMoves() {
   const list = useRef<HTMLUListElement>(null);
-  const last = useRef<{ order: string; tops: Map<string, number> } | null>(null);
-  const key = order.join(",");
-  // Every commit: the places before a change are where the cards were drawn
-  // last (opening or closing a card moves the ones below it too).
-  useLayoutEffect(() => {
+  const snapshot = useRef<{ tops: Map<string, number>; anchor: string | null } | null>(null);
+  const before = useCallback((anchor: string | null = null) => {
     const ul = list.current;
-    if (!ul) {
-      last.current = null;
-      return;
-    }
-    const base = ul.getBoundingClientRect().top;
-    const cards = new Map<string, HTMLElement>();
-    for (const el of ul.querySelectorAll<HTMLElement>(":scope > [data-entry]")) {
-      if (el.dataset.entry) cards.set(el.dataset.entry, el);
-    }
+    if (!ul) return;
     const tops = new Map<string, number>();
-    for (const [id, el] of cards) tops.set(id, el.getBoundingClientRect().top - base);
-    const before = last.current;
-    last.current = { order: key, tops };
-    if (!before || before.order === key) return;
+    for (const el of cardsOf(ul)) tops.set(el.dataset.entry ?? "", el.getBoundingClientRect().top);
+    snapshot.current = { tops, anchor };
+  }, []);
+  useLayoutEffect(() => {
+    const snap = snapshot.current;
+    snapshot.current = null;
+    const ul = list.current;
+    if (!snap || !ul) return;
+    const cards = cardsOf(ul);
+    // Slides still running would skew where the cards now are.
+    for (const el of cards) for (const a of el.getAnimations?.() ?? []) a.cancel();
+    const anchor = cards.find((el) => el.dataset.entry === snap.anchor);
+    const from = anchor ? snap.tops.get(anchor.dataset.entry ?? "") : undefined;
+    if (anchor && from !== undefined) {
+      const shift = anchor.getBoundingClientRect().top - from;
+      if (Math.abs(shift) >= 1) window.scrollBy(0, shift);
+    }
     if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
-    for (const [id, el] of cards) {
-      const from = before.tops.get(id);
-      const to = tops.get(id);
-      if (from === undefined || to === undefined || Math.abs(from - to) < 1) continue;
-      el.animate?.([{ transform: `translateY(${from - to}px)` }, { transform: "none" }], {
+    for (const el of cards) {
+      const was = snap.tops.get(el.dataset.entry ?? "");
+      if (was === undefined) continue;
+      const delta = was - el.getBoundingClientRect().top;
+      if (Math.abs(delta) < 1) continue;
+      el.animate?.([{ transform: `translateY(${delta}px)` }, { transform: "none" }], {
         duration: 280,
         easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
       });
     }
   });
-  return list;
+  return [list, before] as const;
 }

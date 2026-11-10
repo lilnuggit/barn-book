@@ -580,7 +580,11 @@ function sent(id: string) {
 async function send(item: OutboxItem): Promise<ActionResult> {
   await pageChangeLanded();
   const action = ACTIONS[item.name] as (...args: unknown[]) => Promise<ActionResult>;
-  const reply = action(...item.args); // hands it to the router straight away
+  // A check-off queued by an older version doesn't say when it was finished:
+  // send when it was made, so it keeps its place at the bottom of the list.
+  const args =
+    item.name === "setEntryStatus" && item.args.length < 3 ? [item.args[0], item.args[1], null, item.createdAt] : item.args;
+  const reply = action(...args); // hands it to the router straight away
   sent(item.id);
   // No answer after a while: say the changes are waiting (see `slowSends`).
   let slow = false;

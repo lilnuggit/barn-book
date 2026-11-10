@@ -244,7 +244,7 @@ export function DayView({
   const done = entries.filter((e) => e.status === "done").length;
   // Still to do first; done and skipped at the bottom, the latest last.
   const shown = useMemo(() => orderForToday(entries, held), [entries, held]);
-  const listRef = useCardMoves(shown.map((e) => e.id));
+  const [listRef, beforeMove] = useCardMoves();
 
   function save(result: Promise<SyncResult>): Promise<SyncResult> {
     void result.then(report);
@@ -252,12 +252,16 @@ export function DayView({
   }
 
   function setStatus(entry: DayEntry, status: EntryStatus) {
+    // A check-off keeps the card she tapped under her finger; unchecking lets it go back up.
+    beforeMove(status === "planned" ? null : entry.id);
     save(run("setEntryStatus", [entry.id, status, finishTime(entry, status, entries)], { key: `status:${entry.id}` }));
     // Open the card after a check-off so the note box is right there. A horse
-    // checked off or skipped stays in its place while its card is open, and
-    // goes down to the bottom once it's closed (or the next one is checked).
-    if (status === "done") updateOpen(() => ({ expandedId: entry.id, held: entry.id }));
-    else if (status === "skipped") updateOpen((now) => (now.expandedId === entry.id ? { held: entry.id } : {}));
+    // just finished (it was still to do) stays in its place while its card is
+    // open, and goes down once it's closed or the next one is checked. One
+    // only switching between done and skipped is already in its place below.
+    const hold = entry.status === "planned" || held === entry.id ? entry.id : null;
+    if (status === "done") updateOpen(() => ({ expandedId: entry.id, held: hold }));
+    else if (status === "skipped" && hold) updateOpen((now) => (now.expandedId === entry.id ? { held: hold } : {}));
   }
 
   function addToDay(horseIds: string[], activityIds: string[], note: string, knownHorses: HorseLite[]) {
@@ -341,7 +345,11 @@ export function DayView({
                 activities={activities}
                 activityById={activityById}
                 expanded={expandedId === entry.id}
-                onToggleExpanded={() => setExpandedId((id) => (id === entry.id ? null : entry.id))}
+                onToggleExpanded={() => {
+                  // Opening a card keeps it under her finger; closing one lets a horse just finished go down.
+                  beforeMove(expandedId === entry.id ? null : entry.id);
+                  setExpandedId((id) => (id === entry.id ? null : entry.id));
+                }}
                 waiting={waiting.has(entry.id)}
                 noteSyncing={notesSyncing.has(entry.id)}
                 typing={typingIn === entry.id}
@@ -354,6 +362,7 @@ export function DayView({
                   save(run("setEntryActivities", [entry.id, activityIds], { key: `activities:${entry.id}` }))
                 }
                 onRemove={() => {
+                  beforeMove();
                   save(run("deleteEntry", [entry.id], { key: `delete:${entry.id}` }));
                   toast(`Removed ${entry.horseName}`);
                 }}

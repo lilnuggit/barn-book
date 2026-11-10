@@ -62,10 +62,9 @@ export function applyDayChanges(entries: DayEntry[], changes: OutboxItem[], date
       case "setEntryStatus": {
         const status = second as EntryStatus;
         // The time she finished it, as sent (the server keeps the same). A
-        // change queued by an older version has none: then it's after every
-        // horse finished before it, unless it was already finished.
+        // change queued by an older version has none: it's sent with when it
+        // was made, which counts unless the horse was already finished.
         const sentAt = (item.args as unknown[])[2];
-        const latest = Math.max(0, ...out.map((e) => e.completedAt ?? 0));
         out = out.map((e) => {
           if (e.id !== first) return e;
           const completedAt =
@@ -75,7 +74,7 @@ export function applyDayChanges(entries: DayEntry[], changes: OutboxItem[], date
                 ? sentAt
                 : e.status !== "planned" && e.completedAt != null
                   ? e.completedAt
-                  : Math.max(item.createdAt, latest + 1);
+                  : item.createdAt;
           return { ...e, status, completedAt };
         });
         break;
