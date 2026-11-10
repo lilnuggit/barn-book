@@ -1,12 +1,11 @@
 "use client";
 
 import { ArrowDown, ArrowUp, ChevronRight, CloudOff, Plus } from "lucide-react";
-import { useOffline } from "next/offline";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite } from "@/lib/data";
 import { PALETTE } from "@/lib/palette";
-import { forgetConfirmedBefore, run, useOverlayWrites, usePendingWrites, type OutboxItem } from "@/lib/sync";
+import { forgetConfirmedBefore, run, useNoSignal, useOverlayWrites, usePendingWrites, type OutboxItem } from "@/lib/sync";
 import { ColorPicker } from "../color-picker";
 import { Sheet, SheetError } from "../sheet";
 import { SAVED_OFFLINE, SAVED_ON_PHONE, useStopWaiting } from "../sheet-save";
@@ -202,7 +201,7 @@ export function ActivityManager({ activities: serverActivities }: { activities: 
 }
 
 function AddActivityRow({ nextColor, existing }: { nextColor: string; existing: ActivityLite[] }) {
-  const offline = useOffline();
+  const offline = useNoSignal();
   const [name, setName] = useState("");
 
   function add() {
@@ -262,7 +261,7 @@ function AddActivityRow({ nextColor, existing }: { nextColor: string; existing: 
 }
 
 function EditActivitySheet({ activity, onClose }: { activity: ActivityLite | null; onClose: () => void }) {
-  const offline = useOffline();
+  const offline = useNoSignal();
   const [name, setName] = useState("");
   const [color, setColor] = useState("slate");
   const [error, setError] = useState<string | null>(null);

@@ -33,6 +33,9 @@ async function Day({ searchParams }: { searchParams: PageProps<"/">["searchParam
     getActivityTypes(userId),
   ]);
   const suggestions = entries.length === 0 ? await getCopySuggestions(userId, date) : [];
+  // When this was read, so the copy kept on the phone can say how old it is.
+  // eslint-disable-next-line react-hooks/purity -- a Server Component renders once per request
+  const loadedAt = Date.now();
 
   return (
     <DayView
@@ -40,6 +43,7 @@ async function Day({ searchParams }: { searchParams: PageProps<"/">["searchParam
       date={date}
       today={today}
       pinned={isISODate(params.d)}
+      loadedAt={loadedAt}
       locale={locale}
       entries={entries}
       horses={horses}

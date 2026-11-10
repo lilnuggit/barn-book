@@ -207,7 +207,16 @@ export async function getDayEntries(userId: string, date: string): Promise<DayEn
     .orderBy(asc(entries.sortOrder), asc(entries.createdAt));
 }
 
-export type CopySuggestion = { date: string; count: number; horseNames: string[] };
+/** A line of a past day's list, as "Repeat list" would copy it. */
+export type CopyLine = { horseId: string; horseName: string; horseColor: string; activityIds: string[] };
+
+export type CopySuggestion = {
+  date: string;
+  count: number;
+  horseNames: string[];
+  /** The lines to copy, so the phone can show the repeated list at once (missing in copies kept by older versions). */
+  lines?: CopyLine[];
+};
 
 /** Past days that could be repeated onto an empty day: the last day with a list, and a week ago. */
 export async function getCopySuggestions(userId: string, date: string): Promise<CopySuggestion[]> {
@@ -222,7 +231,13 @@ export async function getCopySuggestions(userId: string, date: string): Promise<
   if (candidates.length === 0) return [];
 
   const rows = await db
-    .select({ date: entries.date, horseName: horses.name })
+    .select({
+      date: entries.date,
+      horseId: entries.horseId,
+      horseName: horses.name,
+      horseColor: horses.color,
+      activityIds: entries.activityIds,
+    })
     .from(entries)
     .innerJoin(horses, eq(entries.horseId, horses.id))
     .where(and(eq(entries.userId, userId), inArray(entries.date, candidates), isNull(horses.archivedAt)))
@@ -230,8 +245,15 @@ export async function getCopySuggestions(userId: string, date: string): Promise<
 
   return candidates
     .map((d) => {
-      const names = rows.filter((r) => r.date === d).map((r) => r.horseName);
-      return { date: d, count: names.length, horseNames: [...new Set(names)] };
+      const lines = rows
+        .filter((r) => r.date === d)
+        .map(({ horseId, horseName, horseColor, activityIds }) => ({ horseId, horseName, horseColor, activityIds }));
+      return {
+        date: d,
+        count: lines.length,
+        horseNames: [...new Set(lines.map((l) => l.horseName))],
+        lines,
+      };
     })
     .filter((s) => s.count > 0);
 }

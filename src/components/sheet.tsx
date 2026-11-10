@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 
 /**
  * iOS-style bottom sheet built on <dialog>, so focus and Escape work for free.
@@ -46,7 +46,11 @@ export function Sheet({
   /** The next close event is one the sheet caused itself (screen hidden), not the rider. */
   const closingItself = useRef(false);
 
-  useEffect(() => {
+  // Opens and closes with the parent. A layout effect, so the sheet is open
+  // before the parent's own layout effects run (a field inside can then take
+  // the keyboard), also when its screen shows again: layout effects run again
+  // then, this one first.
+  useLayoutEffect(() => {
     openRef.current = open;
     const dialog = ref.current;
     if (!dialog) return;
@@ -59,10 +63,9 @@ export function Sheet({
   // for a moment while it reloads) or removed while it's open, close it so it
   // can't linger as an invisible layer that swallows every tap. That's not the
   // rider closing it, so the parent isn't told (its draft is kept), and it
-  // opens again when the screen shows again (layout effects run again then).
+  // opens again when the screen shows again (the effect above).
   useLayoutEffect(() => {
     const dialog = ref.current;
-    if (dialog && openRef.current && !dialog.open) dialog.showModal();
     return () => {
       if (dialog?.open) {
         closingItself.current = true;

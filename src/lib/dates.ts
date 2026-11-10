@@ -44,6 +44,11 @@ export function todayInTimeZone(timeZone: string, now = new Date()): string {
   }).format(now);
 }
 
+/** The date on the phone itself, in its own time zone. */
+export function phoneToday(now = new Date()): string {
+  return todayInTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone, now);
+}
+
 function fmt(locale: string, iso: string, options: Intl.DateTimeFormatOptions) {
   return new Intl.DateTimeFormat(locale, { ...options, timeZone: "UTC" }).format(toUTC(iso));
 }

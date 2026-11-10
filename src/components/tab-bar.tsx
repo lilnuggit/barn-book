@@ -3,11 +3,10 @@
 import { CalendarCheck, CloudOff, NotebookText, RefreshCw, Settings } from "lucide-react";
 import Link from "next/link";
 import { useSelectedLayoutSegment } from "next/navigation";
-import { useOffline } from "next/offline";
 import { Suspense } from "react";
 import { reloadIfReachable, useStuckScreen } from "@/lib/missing-code";
 import { toast } from "./toast";
-import { usePendingWrites, useSyncStuck } from "@/lib/sync";
+import { useNoSignal, usePendingWrites, useSyncStuck } from "@/lib/sync";
 import { HorseshoeIcon } from "./icons";
 import { cx } from "./ui";
 
@@ -72,7 +71,7 @@ function TabBarView({ active }: { active: string | null | undefined }) {
  * are saved on the phone). Shown above the tabs, clear of the + button.
  */
 function StuckScreen() {
-  const offline = useOffline();
+  const offline = useNoSignal();
   const stuck = useStuckScreen(!offline);
   if (!stuck) return null;
   return (
@@ -97,7 +96,7 @@ function StuckScreen() {
 
 /** A slim line above the tabs: no signal, or changes that can't get through yet. */
 function SyncStatus() {
-  const offline = useOffline();
+  const offline = useNoSignal();
   const pending = usePendingWrites();
   // Changes go strictly in order: while the first can't get through, everything behind it waits too.
   const stuck = useSyncStuck() ? pending.length : 0;

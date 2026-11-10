@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import { EntryLog } from "@/components/entry-log";
 import { EditHorseButton } from "@/components/horses/horse-sheets";
 import { PageHeader } from "@/components/page-header";
+import { WaitingChangesNote } from "@/components/waiting-note";
 import { ActivityChip, Card, cx, SectionTitle, Skeleton } from "@/components/ui";
 import { requireUserId } from "@/lib/auth";
 import {
@@ -86,6 +87,7 @@ async function HorseDetail({
       </PageHeader>
 
       <div className="mx-auto max-w-xl space-y-8 px-4 pt-5">
+        <WaitingChangesNote />
         {horse.notes && (
           <section>
             <SectionTitle>About</SectionTitle>

@@ -2,11 +2,10 @@
 
 import { Archive, ArchiveRestore, CloudOff, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useOffline } from "next/offline";
 import { useRef, useState, type ReactNode } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import { PALETTE } from "@/lib/palette";
-import { notePageChange, run, useOverlayWrites, usePendingWrites, type OutboxItem } from "@/lib/sync";
+import { notePageChange, run, useNoSignal, useOverlayWrites, usePendingWrites, type OutboxItem } from "@/lib/sync";
 import { ColorPicker } from "../color-picker";
 import { headerButtonClass } from "../page-header";
 import { Sheet, SheetError } from "../sheet";
@@ -24,7 +23,7 @@ const inputClass =
 const labelClass = "mb-2 block text-[13px] font-semibold tracking-wide text-ink-3 uppercase";
 
 export function AddHorseButton() {
-  const offline = useOffline();
+  const offline = useNoSignal();
   const overlay = useOverlayWrites();
   const pending = usePendingWrites();
   const session = useSheetSession();
@@ -180,7 +179,7 @@ export function EditHorseButton({
   horse: { id: string; name: string; color: string; notes: string; archived: boolean; entryCount: number };
 }) {
   const router = useRouter();
-  const offline = useOffline();
+  const offline = useNoSignal();
   const overlay = useOverlayWrites();
   const session = useSheetSession();
   // Changes not on this page yet (still on the phone, or just confirmed and

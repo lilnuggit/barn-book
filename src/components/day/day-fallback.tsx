@@ -1,9 +1,9 @@
 "use client";
 
-import { useOffline } from "next/offline";
 import { useEffect, useState } from "react";
 import { readDayCopy, type DayCopy } from "@/lib/day-copy";
-import { isISODate, todayInTimeZone } from "@/lib/dates";
+import { isISODate, phoneToday } from "@/lib/dates";
+import { useNoSignal } from "@/lib/sync";
 import { DaySkeleton } from "./day-skeleton";
 import { DayView } from "./day-view";
 
@@ -14,7 +14,7 @@ import { DayView } from "./day-view";
  * once, otherwise after a few seconds).
  */
 export function DayFallback() {
-  const offline = useOffline();
+  const offline = useNoSignal();
   const [slow, setSlow] = useState(false);
   const [copy, setCopy] = useState<{ day: DayCopy; pinned: boolean; today: string } | null>(null);
 
@@ -28,7 +28,7 @@ export function DayFallback() {
     const d = new URLSearchParams(window.location.search).get("d");
     const pinned = isISODate(d);
     // The phone's own date is the best idea of "today" there is without the server.
-    const today = todayInTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const today = phoneToday();
     const day = readDayCopy(pinned ? d : today);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reads the phone's storage, only known after mount
     setCopy(day ? { day, pinned, today } : null);
@@ -54,6 +54,7 @@ export function DayFallback() {
       today={today}
       pinned={pinned}
       savedAt={day.savedAt}
+      loadedAt={day.loadedAt}
       locale={day.locale}
       entries={day.entries}
       horses={day.horses}

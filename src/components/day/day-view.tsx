@@ -3,20 +3,11 @@
 import { CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Copy, Loader2, Plus } from "lucide-react";
 import Link, { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
-import { useOffline } from "next/offline";
-import { useEffect, useMemo, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
 import type { EntryStatus } from "@/db/schema";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite, CopySuggestion, DayEntry, HorseLite } from "@/lib/data";
-import {
-  addDays,
-  daysBetween,
-  formatLong,
-  formatShort,
-  isISODate,
-  relativeDayName,
-  todayInTimeZone,
-} from "@/lib/dates";
+import { addDays, daysBetween, formatLong, formatShort, isISODate, phoneToday, relativeDayName } from "@/lib/dates";
 import {
   forgetConfirmedBefore,
   ignoreClick,
@@ -24,6 +15,7 @@ import {
   notePageChange,
   refreshWhenPossible,
   run,
+  useNoSignal,
   useOverlayWrites,
   usePendingWrites,
   useSyncStuck,
@@ -33,10 +25,10 @@ import { HorseshoeMark } from "../icons";
 import { headerButtonClass } from "../page-header";
 import { toast } from "../toast";
 import { cx } from "../ui";
-import { applyDayChanges, saveDayCopy } from "@/lib/day-copy";
+import { addedLines, applyDayChanges, readDayCopy, saveDayCopy } from "@/lib/day-copy";
 import { busyEditing } from "@/lib/editing";
 import { AddSheet } from "./add-sheet";
-import { useDayOpen } from "./day-open-state";
+import { sheetDraftEmpty, useDayScreen, useDayUi } from "./day-open-state";
 import { EntryCard } from "./entry-card";
 
 type Props = {
@@ -46,6 +38,8 @@ type Props = {
   pinned: boolean;
   /** Drawn from the copy kept on the phone (no signal), saved at this time. */
   savedAt?: number;
+  /** When the list was loaded from the server (for a copy: the last load it was saved from). */
+  loadedAt?: number;
   locale: string;
   entries: DayEntry[];
   horses: HorseLite[];
@@ -62,9 +56,10 @@ function waitingEntryIds(pending: OutboxItem[], stuck: boolean): Set<string> {
   const ids = new Set<string>();
   if (!stuck) return ids;
   for (const item of pending) {
-    if (item.name === "addEntries") {
-      for (const e of (item.meta as { entries?: DayEntry[] } | undefined)?.entries ?? []) ids.add(e.id);
-    } else if (typeof item.args[0] === "string") {
+    const lines = addedLines(item);
+    if (lines) {
+      for (const e of lines) ids.add(e.id);
+    } else if (item.name !== "copyDay" && typeof item.args[0] === "string") {
       ids.add(item.args[0]);
     }
   }
@@ -86,15 +81,18 @@ function subscribeToClock(onChange: () => void) {
  * reach the server again.
  */
 function usePhoneToday(serverToday: string) {
-  return useSyncExternalStore(
-    subscribeToClock,
-    () => todayInTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone),
-    () => serverToday,
-  );
+  return useSyncExternalStore(subscribeToClock, () => phoneToday(), () => serverToday);
 }
 
 const NO_SIGNAL_DAYS = "No signal — other days load once you’re back online";
 
+/** "at 8:00 AM", or "on Sun, Nov 8 at 8:00 AM" when it wasn't today. */
+function whenLoaded(at: number, locale: string) {
+  const time = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(at);
+  if (phoneToday(new Date(at)) === phoneToday()) return `at ${time}`;
+  const day = new Intl.DateTimeFormat(locale, { weekday: "short", month: "short", day: "numeric" }).format(at);
+  return `on ${day} at ${time}`;
+}
 
 function report(result: SyncResult) {
   if (!result.ok && result.reason === "invalid") toast(result.error);
@@ -105,28 +103,61 @@ export function DayView({
   today,
   pinned,
   savedAt,
+  loadedAt,
   locale,
   entries: serverEntries,
   horses,
   activities,
   suggestions,
 }: Props) {
+  // Open card and add sheet: shared by every copy of this day's screen (see
+  // day-open-state). First, so a new screen for the day starts afresh before
+  // anything reads them.
+  useDayScreen(date);
+  const [{ expandedId, sheetOpen, typingIn }, updateOpen] = useDayUi(date);
   const router = useRouter();
   const pending = usePendingWrites();
   const overlay = useOverlayWrites();
-  const offline = useOffline();
+  const offline = useNoSignal();
   const stuck = useSyncStuck();
   // Labels ("Today", "Yesterday") follow the phone's date. If the day has
   // moved on since this page loaded, get the new day's list once there's signal.
   const now = usePhoneToday(today);
-  const newDay = now > today;
-  // This list was "today" when it loaded and the phone is now on the next day.
-  const staleToday = newDay && date === today;
+  const behind = now > today;
+  // The phone's date when this screen was put on show. A list on show as
+  // today when the phone's day moves on (the app left open overnight) is a
+  // stale "today", even after a save brings the server's new date; a day she
+  // opens later is just that day.
+  const [dayWhenShown, setDayWhenShown] = useState(today);
+  useLayoutEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the phone's clock, read each time the screen shows
+    setDayWhenShown(phoneToday());
+  }, []);
+  const staleToday = date === dayWhenShown && now > dayWhenShown;
+  // When she last came back to the app (unlocked the phone, switched back to it).
+  const backAt = useRef(0);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") backAt.current = Date.now();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
   // Waiting for her to finish (sheet open, typing) before loading the new day.
   const [heldForEditing, setHeldForEditing] = useState(false);
   useEffect(() => {
-    if (!newDay || savedAt !== undefined) return;
+    if ((!behind && !staleToday) || savedAt !== undefined) return;
     function moveOn() {
+      if (staleToday && Date.now() - backAt.current < 5000) {
+        // Just back on the phone, the next morning: what was left open on
+        // this list last night mustn't hold today's back (or catch the first
+        // taps of the day): an add sheet with nothing in it closes, and a note
+        // box lets go of the keyboard (its text was saved when she left, and
+        // letting go saves it again).
+        updateOpen((ui) => (ui.sheetOpen && sheetDraftEmpty(date) ? { sheetOpen: false } : {}));
+        const el = document.activeElement;
+        if (el instanceof HTMLTextAreaElement && el.dataset.noteFor) el.blur();
+      }
       // Not while she's in the middle of something: a new day's list would
       // replace this one, open sheet and all.
       const busy = busyEditing();
@@ -154,7 +185,7 @@ export function DayView({
       clearTimeout(first);
       clearInterval(timer);
     };
-  }, [newDay, staleToday, pinned, offline, router, savedAt]);
+  }, [behind, staleToday, pinned, offline, router, savedAt, date, updateOpen]);
   // Changes show instantly: each one is stored on the phone the moment it's
   // made, and the screen is drawn from the server's data plus those changes.
   // (Deliberately no transition per save: a pending one would hold up every
@@ -174,10 +205,8 @@ export function DayView({
   useEffect(() => {
     if (savedAt !== undefined) return;
     const known = [...horses, ...waitingHorses.filter((h) => h && !horses.some((x) => x.id === h.id))];
-    saveDayCopy({ date, today, locale, entries, horses: known, activities, suggestions });
-  }, [savedAt, date, today, locale, entries, horses, waitingHorses, activities, suggestions]);
-  // Open card and add sheet: shared by every copy of this day's screen (see day-open-state).
-  const [{ expandedId, sheetOpen, typingIn }, updateOpen] = useDayOpen(date);
+    saveDayCopy({ date, today, locale, entries, horses: known, activities, suggestions, loadedAt });
+  }, [savedAt, date, today, locale, entries, horses, waitingHorses, activities, suggestions, loadedAt]);
   function setExpandedId(next: string | null | ((id: string | null) => string | null)) {
     updateOpen((now) => ({ expandedId: typeof next === "function" ? next(now.expandedId) : next }));
   }
@@ -191,10 +220,10 @@ export function DayView({
     () => new Set(pending.filter((i) => i.name === "saveEntryNote").map((i) => i.args[0] as string)),
     [pending],
   );
-  // A "Repeat list" that hasn't shown up yet (still waiting, or confirmed but
-  // the new list not loaded): show that, and don't offer to add horses by hand
-  // meanwhile (that would add them twice).
-  const copying = overlay.some((i) => i.name === "copyDay" && i.args[1] === date);
+  // A "Repeat list" queued by an older version of the app, without its lines,
+  // that hasn't shown up yet: show that, and don't offer to add horses by
+  // hand meanwhile (that would add them twice).
+  const copying = overlay.some((i) => i.name === "copyDay" && i.args[1] === date && !addedLines(i));
   const done = entries.filter((e) => e.status === "done").length;
 
   function save(result: Promise<SyncResult>): Promise<SyncResult> {
@@ -218,6 +247,25 @@ export function DayView({
     save(run("addEntries", [{ date, items, activityIds, note }], { meta: { entries: added } }));
   }
 
+  /** Repeats a past day's list here. Its lines show at once, like lines added by hand. */
+  function repeat(s: CopySuggestion): Promise<SyncResult> {
+    const lines = (s.lines ?? []).map((line) => ({ ...line, id: crypto.randomUUID() }));
+    // A suggestion kept by an older version of the app, without its lines.
+    if (lines.length === 0) return save(run("copyDay", [s.date, date], { key: `copy:${date}` }));
+    const added: DayEntry[] = lines.map((l) => ({
+      id: l.id,
+      date,
+      horseId: l.horseId,
+      horseName: l.horseName,
+      horseColor: l.horseColor,
+      status: "planned",
+      activityIds: l.activityIds,
+      note: "",
+    }));
+    const sent = lines.map(({ id, horseId, activityIds }) => ({ id, horseId, activityIds }));
+    return save(run("copyDay", [s.date, date, sent], { key: `copy:${date}`, meta: { entries: added } }));
+  }
+
   return (
     <>
       <DayHeader
@@ -235,9 +283,8 @@ export function DayView({
       <div className="mx-auto max-w-xl px-4 pt-4 pb-20">
         {savedAt !== undefined && (
           <p role="status" className="mb-3 rounded-xl bg-surface-2 px-3 py-2 text-[14px] text-ink-2">
-            {offline ? "No signal" : "Still loading"} — this is the list as it was on this phone at{" "}
-            {new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(savedAt)}. Your
-            changes are kept and will sync.
+            {offline ? "No signal" : "Still loading"} — this is the list as last loaded{" "}
+            {whenLoaded(loadedAt ?? savedAt, locale)}, with your changes since. They’re kept and will sync.
           </p>
         )}
         {entries.length === 0 && copying ? (
@@ -260,6 +307,7 @@ export function DayView({
             hasHorses={horses.length > 0}
             suggestions={suggestions}
             onStart={() => setSheetOpen(true)}
+            onRepeat={repeat}
           />
         ) : (
           <ul className="space-y-3">
@@ -376,10 +424,16 @@ function DayHeader({
   // server can still have the phone's old time zone).
   const href = (d: string) => (d === now && d === today ? "/" : `/?d=${d}`);
   const round = "relative grid size-10 place-items-center rounded-full bg-header-fill active:opacity-70";
-  // Another day needs the server; with no signal the tap would only take
-  // effect (suddenly) once the signal is back. Say so instead.
-  function stayOffline(e: MouseEvent) {
-    if (!offline) return;
+  // With no signal, a day opens only if the phone can draw it: today's list
+  // (from Next's cache, or the phone's copy, like the Today tab) and days it
+  // has a copy of. Any other would only open (suddenly) once the signal is
+  // back, so say so instead.
+  function opensOffline(url: string) {
+    const d = new URL(url, window.location.href).searchParams.get("d");
+    return d === null || readDayCopy(d) !== null;
+  }
+  function stayOffline(e: MouseEvent<HTMLAnchorElement>) {
+    if (!offline || opensOffline(e.currentTarget.href)) return;
     e.preventDefault(); // Next's Link then doesn't navigate…
     ignoreClick(e.nativeEvent); // …and the save queue doesn't wait for a page change
     toast(NO_SIGNAL_DAYS);
@@ -417,7 +471,7 @@ function DayHeader({
             onClick={(e) => e.currentTarget.showPicker?.()}
             onChange={(e) => {
               if (!isISODate(e.target.value)) return;
-              if (offline) {
+              if (offline && !opensOffline(href(e.target.value))) {
                 toast(NO_SIGNAL_DAYS);
                 return;
               }
@@ -476,6 +530,7 @@ function EmptyDay({
   hasHorses,
   suggestions,
   onStart,
+  onRepeat,
 }: {
   date: string;
   today: string;
@@ -483,6 +538,7 @@ function EmptyDay({
   hasHorses: boolean;
   suggestions: CopySuggestion[];
   onStart: () => void;
+  onRepeat: (s: CopySuggestion) => Promise<SyncResult>;
 }) {
   const [pendingDate, setPendingDate] = useState<string | null>(null);
   // Only until the copy is queued: from then on DayView shows "Copying the list…".
@@ -508,13 +564,10 @@ function EmptyDay({
     );
   }
 
-  function copyFrom(from: string) {
+  function copyFrom(s: CopySuggestion) {
     if (isPending) return;
-    setPendingDate(from);
-    void run("copyDay", [from, date], { key: `copy:${date}` }).then((result) => {
-      setPendingDate(null);
-      report(result);
-    });
+    setPendingDate(s.date);
+    void onRepeat(s).then(() => setPendingDate(null));
   }
 
   const dayName = relativeDayName(date, today, locale);
@@ -541,7 +594,7 @@ function EmptyDay({
               key={s.date}
               type="button"
               disabled={isPending}
-              onClick={() => copyFrom(s.date)}
+              onClick={() => copyFrom(s)}
               className="flex w-full items-center gap-3 rounded-2xl bg-surface p-4 text-left shadow-card ring-1 ring-line active:bg-surface-2 disabled:opacity-60"
             >
               <span className="grid size-10 shrink-0 place-items-center rounded-full bg-brand-soft text-brand">

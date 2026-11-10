@@ -1,12 +1,12 @@
 "use client";
 
 import { Check, ChevronDown, CloudOff, Minus, Trash2 } from "lucide-react";
-import { useOffline } from "next/offline";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { EntryStatus } from "@/db/schema";
 import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite, DayEntry } from "@/lib/data";
 import { colorClass } from "@/lib/palette";
+import { useNoSignal } from "@/lib/sync";
 import { ToggleChip } from "../toggle-chip";
 import { ActivityChip, cx } from "../ui";
 
@@ -101,6 +101,7 @@ export function EntryCard({
       {expanded && (
         <div className="space-y-4 border-t border-line px-4 pt-3 pb-4">
           <NoteField
+            entryId={entry.id}
             initial={entry.note}
             syncing={noteSyncing}
             stuck={waiting}
@@ -235,6 +236,14 @@ function StatusSwitch({ status, onChange }: { status: EntryStatus; onChange: (s:
 }
 
 /**
+ * What's in each note box that has the keyboard. A copy of the screen that
+ * takes over meanwhile (the live list replacing the one kept on the phone)
+ * carries on from it, so even the last few letters, not yet handed to the
+ * phone's queue, aren't lost.
+ */
+const typedNotes = new Map<string, string>();
+
+/**
  * Saves a moment after typing stops, when the field loses focus, when the
  * phone locks or the app is backgrounded, and when the card closes. Each save
  * lands on the phone first (so it survives a dropped signal or iOS closing the
@@ -242,6 +251,7 @@ function StatusSwitch({ status, onChange }: { status: EntryStatus; onChange: (s:
  * server has it — even if that happens later, after an automatic retry.
  */
 function NoteField({
+  entryId,
   initial,
   syncing,
   stuck,
@@ -249,6 +259,7 @@ function NoteField({
   onTyping,
   onSave,
 }: {
+  entryId: string;
   initial: string;
   /** This entry's note is still waiting on the phone. */
   syncing: boolean;
@@ -260,17 +271,20 @@ function NoteField({
   onSave: (note: string) => Promise<SyncResult>;
 }) {
   const id = useId();
-  const offline = useOffline();
-  const [value, setValue] = useState(initial);
+  const noSignal = useNoSignal();
+  const [value, setValue] = useState(() => (typingHere ? typedNotes.get(entryId) : undefined) ?? initial);
   const [sent, setSent] = useState(false);
   // Typed here and not handed to the phone's queue yet.
   const [typing, setTyping] = useState(false);
+  // The box has the keyboard: what's in it is hers, and nothing replaces it.
+  const [focused, setFocused] = useState(false);
   const [shownInitial, setShownInitial] = useState(initial);
-  if (initial !== shownInitial) {
-    // The note changed somewhere else (another copy of this screen, the
-    // server): show that, unless she has typing of her own not yet saved.
+  if (initial !== shownInitial && !typing && !focused) {
+    // The note changed somewhere else (another device, another copy of this
+    // screen) while she wasn't in the box: show that. Spaces or new lines at
+    // the ends don't count: that's only the server tidying what she typed.
     setShownInitial(initial);
-    if (!typing) setValue(initial);
+    if (initial.trim() !== value.trim()) setValue(initial);
   }
   const ref = useRef<HTMLTextAreaElement>(null);
   const lastSent = useRef(initial);
@@ -298,16 +312,24 @@ function NoteField({
     void onSaveRef.current(next);
   }
 
-  // Shown text taken over from elsewhere counts as already saved.
+  // Shown text that matches the note (from elsewhere, or her own save coming
+  // back from the server) counts as already saved.
   useEffect(() => {
-    if (latest.current === initial) lastSent.current = initial;
+    if (latest.current.trim() === initial.trim()) lastSent.current = latest.current;
   }, [initial]);
 
   // This screen replaced another copy of itself while she was typing here:
-  // keep the keyboard up, with the cursor at the end.
+  // carry on with what's in the box there (she may have typed a letter or two
+  // more while this one was being drawn), and keep the keyboard up, with the
+  // cursor at the end.
   useEffect(() => {
     const el = ref.current;
     if (!typingHere || !el || document.activeElement === el) return;
+    const typed = typedNotes.get(entryId);
+    if (typed !== undefined && typed !== el.value) {
+      el.value = typed; // so the cursor goes to the end of it
+      setValue(typed);
+    }
     el.focus();
     el.setSelectionRange(el.value.length, el.value.length);
     // Only when it first appears.
@@ -331,11 +353,22 @@ function NoteField({
       window.removeEventListener("pagehide", flush);
       // Don't lose typing when the card closes or the screen changes.
       flush();
+      // Removed while it had the keyboard (the browser then says nothing):
+      // she's no longer typing here, unless this note's box on the screen
+      // that took over has the keyboard now.
+      setTimeout(() => {
+        const el = document.activeElement;
+        if (el instanceof HTMLTextAreaElement && el.dataset.noteFor === entryId) return;
+        typedNotes.delete(entryId);
+        onTypingRef.current(false);
+      }, 0);
     };
+    // Set up once; flush and the entry go by refs and don't change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const label = syncing
-    ? offline || stuck
+    ? noSignal || stuck
       ? { text: "Saved on this phone — will sync", tone: "text-ink-3" }
       : { text: "Saving…", tone: "text-ink-3" }
     : sent
@@ -361,16 +394,24 @@ function NoteField({
         rows={2}
         maxLength={4000}
         placeholder="How did it go? What did you work on?"
+        data-note-for={entryId}
         onChange={(e) => {
           setValue(e.target.value);
+          typedNotes.set(entryId, e.target.value);
           setTyping(true);
           setSent(false); // new text isn't saved yet: no "Saved" until it is
           clearTimeout(timer.current);
           timer.current = setTimeout(flush, 900);
         }}
-        onFocus={() => onTyping(true)}
+        onFocus={(e) => {
+          setFocused(true);
+          typedNotes.set(entryId, e.currentTarget.value);
+          onTyping(true);
+        }}
         onBlur={() => {
           flush();
+          setFocused(false);
+          typedNotes.delete(entryId);
           // Unless the same note has the keyboard again at once (another copy
           // of this screen took over).
           const el = ref.current;

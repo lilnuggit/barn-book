@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import type { ActivityLite, HorseLite } from "@/lib/data";
 import { PALETTE } from "@/lib/palette";
 import { run, useOverlayWrites } from "@/lib/sync";
@@ -9,7 +9,7 @@ import { Sheet } from "../sheet";
 import { toast } from "../toast";
 import { ToggleChip } from "../toggle-chip";
 import { cx } from "../ui";
-import { useDayOpen } from "./day-open-state";
+import { useSheetDraft, type SheetDraft } from "./day-open-state";
 
 export function AddSheet({
   draftKey,
@@ -31,15 +31,35 @@ export function AddSheet({
   horseIdsOnDay: Set<string>;
   onAdd: (horseIds: string[], activityIds: string[], note: string, knownHorses: HorseLite[]) => void;
 }) {
-  // Picks and note: shared by every copy of the day's screen (see day-open-state).
-  const [{ horseIds, activityIds, note, created }, updateOpen] = useDayOpen(draftKey);
-  const setHorseIds = (change: (ids: string[]) => string[]) => updateOpen((now) => ({ horseIds: change(now.horseIds) }));
+  // What's picked and typed: shared by every copy of the day's screen (see day-open-state).
+  const [draft, updateDraft] = useSheetDraft(draftKey);
+  const { horseIds, activityIds, note, created, newName, showNewHorse } = draft;
+  const setHorseIds = (change: (ids: string[]) => string[]) => updateDraft((now) => ({ horseIds: change(now.horseIds) }));
   const setActivityIds = (change: (ids: string[]) => string[]) =>
-    updateOpen((now) => ({ activityIds: change(now.activityIds) }));
-  const setNote = (value: string) => updateOpen(() => ({ note: value }));
-  const setCreated = (change: (list: HorseLite[]) => HorseLite[]) => updateOpen((now) => ({ created: change(now.created) }));
-  const [newName, setNewName] = useState("");
-  const [showNewHorse, setShowNewHorse] = useState(false);
+    updateDraft((now) => ({ activityIds: change(now.activityIds) }));
+  const setNote = (value: string) => updateDraft(() => ({ note: value }));
+  const setCreated = (change: (list: HorseLite[]) => HorseLite[]) =>
+    updateDraft((now) => ({ created: change(now.created) }));
+  const setNewName = (value: string) => updateDraft(() => ({ newName: value }));
+  const setShowNewHorse = (show: boolean) => updateDraft(() => ({ showNewHorse: show }));
+  // Which field has the keyboard, so a copy of the screen taking over carries on in it.
+  const typingIn = (field: SheetDraft["typingIn"]) => ({
+    onFocus: () => updateDraft(() => ({ typingIn: field })),
+    onBlur: () => updateDraft((now) => ({ typingIn: now.typingIn === field ? null : now.typingIn })),
+  });
+  const noteRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  // This screen took over from another copy of itself while she was typing in
+  // the sheet: put the keyboard back in that field (the sheet, just opened
+  // again, has put it on its first button), with the cursor at the end.
+  useLayoutEffect(() => {
+    const el = draft.typingIn === "note" ? noteRef.current : draft.typingIn === "name" ? nameRef.current : null;
+    if (!open || !el || document.activeElement === el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+    // Only when it first appears (the sheet re-opens in its own layout effect, which runs first).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Changes still on the phone, plus ones just confirmed that the page's list
   // doesn't include yet (it refreshes once the other saves have gone out).
   const overlay = useOverlayWrites();
@@ -78,7 +98,7 @@ export function AddSheet({
     onAdd(horseIds, activityIds, note.trim(), allHorses);
     const names = horseIds.map((id) => allHorses.find((h) => h.id === id)?.name).filter(Boolean);
     toast(names.length === 1 ? `Added ${names[0]}` : `Added ${names.length} horses`);
-    updateOpen(() => ({ horseIds: [], activityIds: [], note: "" }));
+    updateDraft(() => ({ horseIds: [], activityIds: [], note: "" }));
   }
 
   const count = horseIds.length;
@@ -138,6 +158,8 @@ export function AddSheet({
             }}
           >
             <input
+              ref={nameRef}
+              {...typingIn("name")}
               autoFocus={showNewHorse}
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
@@ -188,6 +210,8 @@ export function AddSheet({
         </label>
         <input
           id="add-note"
+          ref={noteRef}
+          {...typingIn("note")}
           value={note}
           onChange={(e) => setNote(e.target.value)}
           placeholder="e.g. lesson at 10, front shoes on"

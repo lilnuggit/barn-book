@@ -145,10 +145,22 @@ export async function deleteEntry(id: string): Promise<ActionResult> {
 }
 
 /** Repeats another day's list (horses and work, not notes) onto an empty day. */
-export async function copyDay(fromDate: string, toDate: string): Promise<ActionResult> {
+/**
+ * Repeats a past day's list onto another day. The phone sends the lines it
+ * shows (with ids it chose, so it can show them, and changes to them, before
+ * this has gone through), and they're added as they are. Without lines (a
+ * repeat queued by an older version of the app), the past day is copied here,
+ * once.
+ */
+export async function copyDay(
+  fromDate: string,
+  toDate: string,
+  lines?: { id: string; horseId: string; activityIds: string[] }[],
+): Promise<ActionResult> {
   return write(async (userId) => {
     assertDate(fromDate);
     assertDate(toDate);
+    if (lines !== undefined) return addCopiedLines(userId, toDate, lines);
     const source = await db
       .select({ horseId: entries.horseId, activityIds: entries.activityIds })
       .from(entries)
@@ -170,6 +182,52 @@ export async function copyDay(fromDate: string, toDate: string): Promise<ActionR
       );
     });
   });
+}
+
+async function addCopiedLines(
+  userId: string,
+  date: string,
+  lines: { id: string; horseId: string; activityIds: string[] }[],
+): Promise<void> {
+  if (!Array.isArray(lines) || lines.length > 200) throw new ValidationError("That list is too long to repeat");
+  const items = lines.map((l) => ({
+    id: assertUUID(l?.id),
+    horseId: assertUUID(l?.horseId),
+    activityIds: uuidList(l?.activityIds),
+  }));
+  if (items.length === 0) return;
+  // Horses deleted since the list was shown are left out.
+  const owned = new Set(
+    (
+      await db
+        .select({ id: horses.id })
+        .from(horses)
+        .where(and(eq(horses.userId, userId), inArray(horses.id, [...new Set(items.map((i) => i.horseId))])))
+    ).map((h) => h.id),
+  );
+  const activities = new Set(await ownedActivityIds(userId, [...new Set(items.flatMap((i) => i.activityIds))]));
+  const rows = items.filter((i) => owned.has(i.horseId));
+  if (rows.length === 0) return;
+
+  const [{ max }] = await db
+    .select({ max: sql<number>`coalesce(max(${entries.sortOrder}), -1)::int` })
+    .from(entries)
+    .where(and(eq(entries.userId, userId), eq(entries.date, date)));
+
+  // Ids chosen by the phone: a retry adds nothing twice.
+  await db
+    .insert(entries)
+    .values(
+      rows.map((i, index) => ({
+        id: i.id,
+        userId,
+        horseId: i.horseId,
+        date,
+        activityIds: i.activityIds.filter((a) => activities.has(a)),
+        sortOrder: max + 1 + index,
+      })),
+    )
+    .onConflictDoNothing();
 }
 
 // ---------- horses ----------

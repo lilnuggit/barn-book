@@ -1,6 +1,7 @@
 "use client";
 
 import { unstable_isUnrecognizedActionError } from "next/navigation";
+import { useOffline } from "next/offline";
 import { useSyncExternalStore } from "react";
 import {
   addEntries,
@@ -154,6 +155,18 @@ let items: OutboxItem[] | null = null;
  * until a save gets through, rather than going by attempt counts.
  */
 let stuck = false;
+/**
+ * Saves handed to the server that have had no answer for a while: on a
+ * connection that hangs instead of failing, nothing fails, so without this
+ * the screen would look synced for as long as the request hangs.
+ */
+let slowSends = 0;
+/**
+ * The server can't be reached although Next hasn't noticed (Wi-Fi with no
+ * internet, one bar): the app's own checks keep failing. Cleared as soon as
+ * the server answers anything.
+ */
+let unreachable = false;
 /** Changes the server just confirmed, still layered on screen until the page data catches up. */
 let recent: { item: OutboxItem; at: number }[] = [];
 const listeners = new Set<() => void>();
@@ -241,9 +254,25 @@ function setStuck(value: boolean) {
   emit();
 }
 
-/** Waiting changes can't get through right now (see `stuck`). */
+function setUnreachable(value: boolean) {
+  if (unreachable === value) return;
+  unreachable = value;
+  emit();
+}
+
+/** Waiting changes can't get through right now (see `stuck`), or the server is taking too long to answer one. */
 export function useSyncStuck(): boolean {
-  return useSyncExternalStore(subscribe, () => stuck, () => false);
+  return useSyncExternalStore(subscribe, () => stuck || slowSends > 0, () => false);
+}
+
+/**
+ * No signal: Next knows it's offline, or the server can't be reached even
+ * though the phone says it's online (see `unreachable`).
+ */
+export function useNoSignal(): boolean {
+  const offline = useOffline();
+  const cantReach = useSyncExternalStore(subscribe, () => unreachable, () => false);
+  return offline || cantReach;
 }
 
 /** Changes saved on this phone (for this account) that the server hasn't confirmed yet. */
@@ -459,7 +488,13 @@ function retryRefresh(ms: number) {
   }, ms);
 }
 
-/** The server answers at all (a quick check, so nothing is left for Next to hold). */
+let checksTimedOut = 0;
+
+/**
+ * The server answers at all (a quick check, so nothing is left for Next to
+ * hold). A failed request means no signal at once; a check that only times
+ * out (a slow start, or a connection that hangs) does after the second.
+ */
 async function reachable() {
   try {
     await fetch(window.location.href, {
@@ -468,8 +503,13 @@ async function reachable() {
       redirect: "manual",
       signal: AbortSignal.timeout(3000),
     });
+    checksTimedOut = 0;
+    setUnreachable(false);
     return true;
-  } catch {
+  } catch (error) {
+    const timedOut = error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError");
+    checksTimedOut = timedOut ? checksTimedOut + 1 : 0;
+    if (!timedOut || checksTimedOut >= 2) setUnreachable(true);
     return false;
   }
 }
@@ -481,7 +521,9 @@ function sendRefresh() {
   // Next holds a reload it can't send and applies it the moment the signal
   // returns, whatever is open by then. Try again shortly.
   if (knownOffline) return; // setKnownOffline(false) tries again
-  if (busyEditing()) {
+  // While she's busy the reload waits; the check still runs while the server
+  // is unreachable, so "No signal" goes as soon as it's back.
+  if (busyEditing() && !unreachable) {
     retryRefresh(2000);
     return;
   }
@@ -540,9 +582,25 @@ async function send(item: OutboxItem): Promise<ActionResult> {
   const action = ACTIONS[item.name] as (...args: unknown[]) => Promise<ActionResult>;
   const reply = action(...item.args); // hands it to the router straight away
   sent(item.id);
-  const result = await reply;
-  if (!result || typeof result.ok !== "boolean") throw new Error(`Unexpected reply from ${item.name}`);
-  return result;
+  // No answer after a while: say the changes are waiting (see `slowSends`).
+  let slow = false;
+  const timer = setTimeout(() => {
+    slow = true;
+    slowSends += 1;
+    emit();
+  }, 8000);
+  try {
+    const result = await reply;
+    if (!result || typeof result.ok !== "boolean") throw new Error(`Unexpected reply from ${item.name}`);
+    setUnreachable(false); // the server answered
+    return result;
+  } finally {
+    clearTimeout(timer);
+    if (slow) {
+      slowSends -= 1;
+      emit();
+    }
+  }
 }
 
 /**

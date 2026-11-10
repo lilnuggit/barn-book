@@ -6,6 +6,7 @@ import { Suspense } from "react";
 import { EntryLog } from "@/components/entry-log";
 import { PageHeader } from "@/components/page-header";
 import { Card, cx, EmptyState, Skeleton } from "@/components/ui";
+import { WaitingChangesNote } from "@/components/waiting-note";
 import { requireUserId } from "@/lib/auth";
 import { getActivityTypes, getMonthCounts, getMonthLog, searchEntries, type DayCount } from "@/lib/data";
 import {
@@ -49,6 +50,7 @@ async function History({ searchParams }: { searchParams: PageProps<"/history">["
     return (
       <>
         <SearchBox query={query} />
+        <WaitingChangesNote className="mt-4" />
         <p className="mt-4 mb-3 px-1 text-[15px] text-ink-2">
           {results.length === 0
             ? "No matches."
@@ -75,6 +77,7 @@ async function History({ searchParams }: { searchParams: PageProps<"/history">["
   return (
     <>
       <SearchBox query="" />
+      <WaitingChangesNote className="mt-4" />
       <Card className="mt-4 p-3">
         <div className="mb-2 flex items-center justify-between">
           <Link
