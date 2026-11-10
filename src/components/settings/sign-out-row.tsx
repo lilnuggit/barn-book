@@ -3,6 +3,7 @@
 import { useClerk } from "@clerk/nextjs";
 import { LogOut } from "lucide-react";
 import { useState } from "react";
+import { clearDayCopies } from "@/lib/day-copy";
 import { discard, usePendingWrites } from "@/lib/sync";
 import { toast } from "../toast";
 
@@ -27,6 +28,7 @@ export function SignOutRow() {
       await clerk.signOut({ redirectUrl: "/sign-in" });
       // Only once the sign-out went through, as the user chose above.
       discard(unsynced);
+      clearDayCopies();
     } catch (error) {
       console.error(error);
       setBusy(false);

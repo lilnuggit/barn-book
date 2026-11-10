@@ -20,6 +20,7 @@ import {
 import {
   forgetConfirmedBefore,
   ignoreClick,
+  isPageChangePending,
   notePageChange,
   refreshWhenPossible,
   run,
@@ -32,6 +33,8 @@ import { HorseshoeMark } from "../icons";
 import { headerButtonClass } from "../page-header";
 import { toast } from "../toast";
 import { cx } from "../ui";
+import { saveDayCopy } from "@/lib/day-copy";
+import { busyEditing } from "@/lib/editing";
 import { AddSheet } from "./add-sheet";
 import { EntryCard } from "./entry-card";
 
@@ -40,6 +43,8 @@ type Props = {
   today: string;
   /** The page was opened for a particular day (?d=), not just "today". */
   pinned: boolean;
+  /** Drawn from the copy kept on the phone (no signal), saved at this time. */
+  savedAt?: number;
   locale: string;
   entries: DayEntry[];
   horses: HorseLite[];
@@ -123,8 +128,22 @@ function report(result: SyncResult) {
   if (!result.ok && result.reason === "invalid") toast(result.error);
 }
 
-export function DayView({ date, today, pinned, locale, entries: serverEntries, horses, activities, suggestions }: Props) {
+export function DayView({
+  date,
+  today,
+  pinned,
+  savedAt,
+  locale,
+  entries: serverEntries,
+  horses,
+  activities,
+  suggestions,
+}: Props) {
   const router = useRouter();
+  // Keep what the server sent, to draw this day from with no signal later.
+  useEffect(() => {
+    if (savedAt === undefined) saveDayCopy({ date, today, locale, entries: serverEntries, horses, activities, suggestions });
+  }, [savedAt, date, today, locale, serverEntries, horses, activities, suggestions]);
   const pending = usePendingWrites();
   const overlay = useOverlayWrites();
   const offline = useOffline();
@@ -137,15 +156,27 @@ export function DayView({ date, today, pinned, locale, entries: serverEntries, h
   const staleToday = newDay && date === today;
   useEffect(() => {
     if (!newDay) return;
-    if (staleToday && pinned) {
-      // Opened as /?d=<that day>: reloading it would show the same day. Go to
-      // today's list instead, once there's signal to load it.
-      if (offline) return;
-      notePageChange("/");
-      router.replace("/");
-    } else {
-      refreshWhenPossible();
+    function moveOn() {
+      // Not while she's in the middle of something: a new day's list would
+      // replace this one, open sheet and all.
+      if (busyEditing()) return false;
+      if (staleToday && pinned) {
+        // Opened as /?d=<that day>: reloading it would show the same day. Go to
+        // today's list instead, once there's signal to load it (and unless the
+        // rider has already set off somewhere else).
+        if (offline || isPageChangePending()) return false;
+        notePageChange("/");
+        router.replace("/");
+      } else {
+        refreshWhenPossible();
+      }
+      return true;
     }
+    if (moveOn()) return;
+    const timer = setInterval(() => {
+      if (moveOn()) clearInterval(timer);
+    }, 2000);
+    return () => clearInterval(timer);
   }, [newDay, staleToday, pinned, offline, router]);
   // Changes show instantly: each one is stored on the phone the moment it's
   // made, and the screen is drawn from the server's data plus those changes.
@@ -194,6 +225,7 @@ export function DayView({ date, today, pinned, locale, entries: serverEntries, h
     <>
       <DayHeader
         date={date}
+        today={today}
         now={now}
         locale={locale}
         done={done}
@@ -203,6 +235,13 @@ export function DayView({ date, today, pinned, locale, entries: serverEntries, h
       />
 
       <div className="mx-auto max-w-xl px-4 pt-4 pb-20">
+        {savedAt !== undefined && (
+          <p role="status" className="mb-3 rounded-xl bg-surface-2 px-3 py-2 text-[14px] text-ink-2">
+            No signal — this is the list as saved on this phone at{" "}
+            {new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(savedAt)}. Your
+            changes are kept and will sync.
+          </p>
+        )}
         {entries.length === 0 && copying ? (
           <div className="flex flex-col items-center px-4 pt-10 text-center">
             <Loader2 className="size-8 animate-spin text-brand" aria-hidden />
@@ -294,6 +333,7 @@ function LoadingHint() {
 
 function DayHeader({
   date,
+  today,
   now,
   locale,
   done,
@@ -302,7 +342,9 @@ function DayHeader({
   newDay,
 }: {
   date: string;
-  /** The phone's today: labels and links follow it. */
+  /** The server's today, when the page loaded. */
+  today: string;
+  /** The phone's today: labels follow it. */
   now: string;
   locale: string;
   done: number;
@@ -323,9 +365,10 @@ function DayHeader({
           : offset < 0
             ? `${-offset} days ago`
             : `In ${offset} days`;
-  // "/" is whatever day it is when the server answers, so only the phone's
-  // today may link there (the page's own idea of today can be a day behind).
-  const href = (d: string) => (d === now ? "/" : `/?d=${d}`);
+  // "/" is whatever day the server thinks it is, so link there only when the
+  // phone agrees; otherwise name the day (the page can be a day behind, or the
+  // server can still have the phone's old time zone).
+  const href = (d: string) => (d === now && d === today ? "/" : `/?d=${d}`);
   const round = "relative grid size-10 place-items-center rounded-full bg-header-fill active:opacity-70";
   // Another day needs the server; with no signal the tap would only take
   // effect (suddenly) once the signal is back. Say so instead.

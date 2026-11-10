@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import { DayFallback } from "@/components/day/day-fallback";
 import { DayView } from "@/components/day/day-view";
-import { Skeleton } from "@/components/ui";
 import { requireUserId } from "@/lib/auth";
 import {
   getActiveHorses,
@@ -16,7 +16,7 @@ export const metadata: Metadata = { title: "Today" };
 
 export default function TodayPage({ searchParams }: PageProps<"/">) {
   return (
-    <Suspense fallback={<DaySkeleton />}>
+    <Suspense fallback={<DayFallback />}>
       <Day searchParams={searchParams} />
     </Suspense>
   );
@@ -46,25 +46,5 @@ async function Day({ searchParams }: { searchParams: PageProps<"/">["searchParam
       activities={activities}
       suggestions={suggestions}
     />
-  );
-}
-
-function DaySkeleton() {
-  return (
-    <>
-      <div className="bg-header pt-safe">
-        <div className="mx-auto max-w-xl px-4 pt-2 pb-5">
-          <div className="h-11" />
-          <div className="h-4 w-16 rounded bg-header-fill" />
-          <div className="mt-2 h-8 w-64 rounded-lg bg-header-fill" />
-          <div className="mt-5 h-1.5 rounded-full bg-header-fill" />
-        </div>
-      </div>
-      <div className="mx-auto max-w-xl space-y-3 px-4 pt-4">
-        {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-[76px] rounded-2xl" />
-        ))}
-      </div>
-    </>
   );
 }

@@ -6,7 +6,7 @@ import { useOffline } from "next/offline";
 import { useRef, useState, type ReactNode } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import { PALETTE } from "@/lib/palette";
-import { notePageChange, run, useOverlayWrites, usePendingWrites } from "@/lib/sync";
+import { notePageChange, run, useOverlayWrites, usePendingWrites, type OutboxItem } from "@/lib/sync";
 import { ColorPicker } from "../color-picker";
 import { headerButtonClass } from "../page-header";
 import { Sheet, SheetError } from "../sheet";
@@ -77,13 +77,14 @@ export function AddHorseButton() {
     const trimmed = name.trim();
     if (!trimmed || session.busy) return;
     const content = `${trimmed}|${color}`;
-    // A horse by this name is already on its way (stored on the phone, or just
-    // confirmed): save it under the same id, so it can't be created twice.
-    const onItsWay = overlay.findLast(
-      (i) => i.name === "createHorse" && (i.meta as NewHorse).name.toLowerCase() === trimmed.toLowerCase(),
-    )?.meta as NewHorse | undefined;
-    if (onItsWay) draft.current = { id: onItsWay.id, content };
-    else if (draft.current?.content !== content) draft.current = { id: crypto.randomUUID(), content };
+    if (draft.current?.content !== content) {
+      // A horse by this name is still on its way (not in the list yet): ask,
+      // so a save that only looked like it hadn't worked doesn't add it twice,
+      // while two horses that really share a name can still both be added.
+      const same = horsesOnTheirWay(overlay).find((h) => h.name.toLowerCase() === trimmed.toLowerCase());
+      if (same && !window.confirm(`${same.name} is already being added (not synced yet). Add another horse called ${trimmed}?`)) return;
+      draft.current = { id: crypto.randomUUID(), content };
+    }
     const horse = { id: draft.current.id, name: trimmed, color };
     const answered = session.send(run("createHorse", [horse], { key: `horse:${horse.id}`, meta: horse }));
 
@@ -371,16 +372,28 @@ export function EditHorseButton({
   );
 }
 
+/** Horses created on this phone that may not be in the page's list yet, with any renames since. */
+function horsesOnTheirWay(overlay: OutboxItem[]): NewHorse[] {
+  const byId = new Map<string, NewHorse>();
+  for (const item of overlay) {
+    const first = item.args[0] as NewHorse | undefined;
+    if (item.name === "createHorse" && item.meta) byId.set((item.meta as NewHorse).id, { ...(item.meta as NewHorse) });
+    else if (item.name === "updateHorse" && first && byId.has(first.id)) byId.set(first.id, { ...byId.get(first.id)!, name: first.name.trim() || byId.get(first.id)!.name, color: first.color });
+    else if (item.name === "deleteHorse") byId.delete(item.args[0] as string);
+  }
+  return [...byId.values()];
+}
+
 /**
- * Horses added on this phone that the server hasn't got yet, so a slow or
- * offline add doesn't look like it didn't happen.
+ * Horses added on this phone that aren't in the list yet (still on the phone,
+ * or just confirmed while the list catches up), so a slow or offline add
+ * doesn't look like it didn't happen.
  */
 export function HorsesOnTheirWay({ known, children }: { known: string[]; children?: ReactNode }) {
+  const overlay = useOverlayWrites();
   const pending = usePendingWrites();
-  const horses = pending
-    .filter((i) => i.name === "createHorse")
-    .map((i) => i.meta as NewHorse)
-    .filter((h, index, all) => h && !known.includes(h.id) && all.findIndex((x) => x.id === h.id) === index);
+  const waiting = new Set(pending.filter((i) => i.name === "createHorse").map((i) => (i.meta as NewHorse).id));
+  const horses = horsesOnTheirWay(overlay).filter((h) => !known.includes(h.id));
   // `children`: what to show when there are none (the empty list's message).
   if (horses.length === 0) return children ?? null;
   return (
@@ -389,9 +402,11 @@ export function HorsesOnTheirWay({ known, children }: { known: string[]; childre
         <li key={h.id} className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-b-0">
           <HorseAvatar name={h.name} color={h.color} />
           <span className="min-w-0 flex-1 truncate text-[17px] font-semibold">{h.name}</span>
-          <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-ink-3">
-            <CloudOff className="size-3.5" aria-hidden /> Not synced yet
-          </span>
+          {waiting.has(h.id) && (
+            <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-ink-3">
+              <CloudOff className="size-3.5" aria-hidden /> Not synced yet
+            </span>
+          )}
         </li>
       ))}
     </ul>

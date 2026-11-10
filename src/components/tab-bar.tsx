@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useSelectedLayoutSegment } from "next/navigation";
 import { useOffline } from "next/offline";
 import { Suspense } from "react";
-import { useMissingCode } from "@/lib/missing-code";
+import { reloadIfReachable, useStuckScreen } from "@/lib/missing-code";
+import { toast } from "./toast";
 import { usePendingWrites, useSyncStuck } from "@/lib/sync";
 import { HorseshoeIcon } from "./icons";
 import { cx } from "./ui";
@@ -38,7 +39,7 @@ function TabBarView({ active }: { active: string | null | undefined }) {
       aria-label="Main"
       className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/90 pb-safe backdrop-blur-xl backdrop-saturate-150"
     >
-      <MissingCode />
+      <StuckScreen />
       <SyncStatus />
       <ul className="mx-auto grid max-w-xl grid-cols-4">
         {TABS.map(({ href, segment: s, label, Icon }) => {
@@ -65,21 +66,32 @@ function TabBarView({ active }: { active: string | null | undefined }) {
 }
 
 /**
- * Part of a screen opened with no signal couldn't download (see missing-code).
- * Once the signal is back, offer a reload; the rider picks the moment, since
- * an open sheet would be lost (changes themselves are saved on the phone).
+ * A screen opened with no signal whose code couldn't download stays on its
+ * placeholders (see missing-code). Once the signal is back, offer a reload:
+ * the rider picks the moment (an open sheet would be lost; changes themselves
+ * are saved on the phone). Shown above the tabs, clear of the + button.
  */
-function MissingCode() {
+function StuckScreen() {
   const offline = useOffline();
-  const missing = useMissingCode();
-  if (offline || !missing) return null;
+  const stuck = useStuckScreen(!offline);
+  if (!stuck) return null;
   return (
-    <p className="flex items-center justify-center gap-2 bg-brand-soft px-4 text-xs font-medium text-brand">
-      <span>Part of this screen couldn’t load.</span>
-      <button type="button" onClick={() => window.location.reload()} className="min-h-8 px-1 font-semibold underline">
-        Reload
-      </button>
-    </p>
+    <div className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+10.5rem)] flex justify-center px-4">
+      <div className="pointer-events-auto flex items-center gap-1 rounded-full bg-ink py-1 pr-1 pl-4 text-[15px] font-medium text-canvas shadow-lg">
+        <span>This screen couldn’t load.</span>
+        <button
+          type="button"
+          onClick={() =>
+            void reloadIfReachable().then((reloading) => {
+              if (!reloading) toast("Still no signal — try again in a moment");
+            })
+          }
+          className="min-h-11 rounded-full px-3 font-semibold underline"
+        >
+          Reload
+        </button>
+      </div>
+    </div>
   );
 }
 

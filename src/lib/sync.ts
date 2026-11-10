@@ -20,6 +20,7 @@ import {
   updateHorse,
 } from "@/app/actions";
 import { toast } from "@/components/toast";
+import { busyEditing } from "./editing";
 import type { ActionResult, SyncResult } from "./action-result";
 
 /*
@@ -108,7 +109,7 @@ function usesClerk() {
 }
 
 /** The signed-in account: an id, null (no Clerk / signed out), or undefined (Clerk still loading). */
-function currentUser(): string | null | undefined {
+export function currentUser(): string | null | undefined {
   if (!usesClerk()) return null;
   const c = clerk();
   if (!c?.loaded) return undefined;
@@ -366,6 +367,11 @@ function watchPageChanges() {
   });
 }
 
+/** A page change the app knows about is still loading. */
+export function isPageChangePending() {
+  return movingTo !== null && typeof window !== "undefined" && window.location.href === movingTo.from;
+}
+
 /** Waits (15 s at most, from now) while a page change is still loading. */
 async function pageChangeLanded(ms = 15_000) {
   const start = Date.now();
@@ -406,13 +412,18 @@ export function run<N extends ActionName>(
   if (onSend) sendHooks.set(item.id, onSend);
 
   if (persist) {
-    let next = stored();
+    let next = [...stored()];
+    let at = next.length;
     if (key) {
       const replaced = next.filter((i) => i.key === key && !started.has(i.id) && isMine(i));
       for (const old of replaced) settle(old.id, { ok: false, reason: "replaced" });
+      // Take the place of the change it replaces, not the back of the line:
+      // changes made since may depend on it (a day's line needs its horse).
+      if (replaced.length) at = next.indexOf(replaced[0]!);
       next = next.filter((i) => !replaced.includes(i));
     }
-    commit([...next, item]);
+    next.splice(at, 0, item);
+    commit(next);
   } else {
     transient.set(item.id, item);
   }
@@ -431,6 +442,14 @@ export function replay() {
 /** Reloading the current page's data is wanted but hasn't gone through yet. */
 let refreshWanted = false;
 let refreshing = false;
+let refreshWait: ReturnType<typeof setTimeout> | undefined;
+/** No signal, as far as the app knows (AppLifecycle passes on useOffline). */
+let knownOffline = false;
+
+export function setKnownOffline(offline: boolean) {
+  knownOffline = offline;
+  if (!offline) sendRefresh();
+}
 
 /**
  * Reloads the current page's data (e.g. the app was left open overnight). Goes
@@ -443,7 +462,18 @@ export function refreshWhenPossible() {
 }
 
 function sendRefresh() {
-  if (!refreshWanted || refreshing) return;
+  if (!refreshWanted || refreshing || refreshWait) return;
+  // Not with no signal (Next would hold it and apply it the moment the signal
+  // returns, whatever is open), nor under an open sheet: the reload can bring
+  // a new day's list that replaces it. Try again shortly.
+  if (knownOffline || busyEditing()) {
+    if (!knownOffline)
+      refreshWait = setTimeout(() => {
+        refreshWait = undefined;
+        sendRefresh();
+      }, 2000);
+    return;
+  }
   refreshing = true;
   void run("refreshPage", [], { persist: false }).then((result) => {
     refreshing = false;
