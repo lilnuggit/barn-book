@@ -105,13 +105,24 @@ export async function addEntries(input: {
   });
 }
 
-export async function setEntryStatus(id: string, status: EntryStatus): Promise<ActionResult> {
+/**
+ * `finishedAt` is when she checked it off or skipped it, by the phone's clock
+ * (it may reach the server much later): it decides the horse's place at the
+ * bottom of the day's list. Changes queued by older versions of the app don't
+ * send it; then the first time it's finished counts.
+ */
+export async function setEntryStatus(id: string, status: EntryStatus, finishedAt?: number | null): Promise<ActionResult> {
   return write(async (userId) => {
     assertUUID(id);
     if (!["planned", "done", "skipped"].includes(status)) throw new ValidationError("Invalid status");
+    const at = typeof finishedAt === "number" && Number.isFinite(finishedAt) && finishedAt > 0 ? new Date(finishedAt) : null;
     await db
       .update(entries)
-      .set({ status, completedAt: status === "done" ? new Date() : null })
+      .set({
+        status,
+        completedAt:
+          status === "planned" ? null : at && !Number.isNaN(at.getTime()) ? at : sql`coalesce(${entries.completedAt}, now())`,
+      })
       .where(and(eq(entries.id, id), eq(entries.userId, userId)));
   });
 }

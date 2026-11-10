@@ -59,9 +59,27 @@ export function applyDayChanges(entries: DayEntry[], changes: OutboxItem[], date
         if (added.length) out = [...out, ...added];
         break;
       }
-      case "setEntryStatus":
-        out = out.map((e) => (e.id === first ? { ...e, status: second as EntryStatus } : e));
+      case "setEntryStatus": {
+        const status = second as EntryStatus;
+        // The time she finished it, as sent (the server keeps the same). A
+        // change queued by an older version has none: then it's after every
+        // horse finished before it, unless it was already finished.
+        const sentAt = (item.args as unknown[])[2];
+        const latest = Math.max(0, ...out.map((e) => e.completedAt ?? 0));
+        out = out.map((e) => {
+          if (e.id !== first) return e;
+          const completedAt =
+            status === "planned"
+              ? null
+              : typeof sentAt === "number"
+                ? sentAt
+                : e.status !== "planned" && e.completedAt != null
+                  ? e.completedAt
+                  : Math.max(item.createdAt, latest + 1);
+          return { ...e, status, completedAt };
+        });
         break;
+      }
       case "saveEntryNote":
         out = out.map((e) => (e.id === first ? { ...e, note: second as string } : e));
         break;

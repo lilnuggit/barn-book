@@ -29,6 +29,7 @@ import { addedLines, applyDayChanges, readDayCopy, saveDayCopy } from "@/lib/day
 import { busyEditing } from "@/lib/editing";
 import { AddSheet } from "./add-sheet";
 import { sheetDraftEmpty, useDayScreen, useDayUi } from "./day-open-state";
+import { orderForToday, useCardMoves } from "./day-order";
 import { EntryCard } from "./entry-card";
 
 type Props = {
@@ -94,6 +95,17 @@ function whenLoaded(at: number, locale: string) {
   return `on ${day} at ${time}`;
 }
 
+/**
+ * When a horse is finished, for its place at the bottom of the list: now
+ * (after every horse finished before it, whatever the clocks say), or, when it
+ * only changes between done and skipped, when it was first finished.
+ */
+function finishTime(entry: DayEntry, status: EntryStatus, entries: DayEntry[]): number | null {
+  if (status === "planned") return null;
+  if (entry.status !== "planned" && entry.completedAt != null) return entry.completedAt;
+  return Math.max(Date.now(), ...entries.map((e) => (e.completedAt ?? 0) + 1));
+}
+
 function report(result: SyncResult) {
   if (!result.ok && result.reason === "invalid") toast(result.error);
 }
@@ -114,7 +126,7 @@ export function DayView({
   // day-open-state). First, so a new screen for the day starts afresh before
   // anything reads them.
   useDayScreen(date);
-  const [{ expandedId, sheetOpen, typingIn }, updateOpen] = useDayUi(date);
+  const [{ expandedId, sheetOpen, typingIn, held }, updateOpen] = useDayUi(date);
   const router = useRouter();
   const pending = usePendingWrites();
   const overlay = useOverlayWrites();
@@ -208,7 +220,12 @@ export function DayView({
     saveDayCopy({ date, today, locale, entries, horses: known, activities, suggestions, loadedAt });
   }, [savedAt, date, today, locale, entries, horses, waitingHorses, activities, suggestions, loadedAt]);
   function setExpandedId(next: string | null | ((id: string | null) => string | null)) {
-    updateOpen((now) => ({ expandedId: typeof next === "function" ? next(now.expandedId) : next }));
+    updateOpen((now) => {
+      const id = typeof next === "function" ? next(now.expandedId) : next;
+      // Closing the card of a horse just checked off (or opening another)
+      // lets it go down with the others that are finished.
+      return { expandedId: id, held: now.held === id ? now.held : null };
+    });
   }
   function setSheetOpen(open: boolean) {
     updateOpen(() => ({ sheetOpen: open }));
@@ -225,6 +242,9 @@ export function DayView({
   // hand meanwhile (that would add them twice).
   const copying = overlay.some((i) => i.name === "copyDay" && i.args[1] === date && !addedLines(i));
   const done = entries.filter((e) => e.status === "done").length;
+  // Still to do first; done and skipped at the bottom, the latest last.
+  const shown = useMemo(() => orderForToday(entries, held), [entries, held]);
+  const listRef = useCardMoves(shown.map((e) => e.id));
 
   function save(result: Promise<SyncResult>): Promise<SyncResult> {
     void result.then(report);
@@ -232,9 +252,12 @@ export function DayView({
   }
 
   function setStatus(entry: DayEntry, status: EntryStatus) {
-    save(run("setEntryStatus", [entry.id, status], { key: `status:${entry.id}` }));
-    // Open the card after a check-off so the note box is right there.
-    if (status === "done") setExpandedId(entry.id);
+    save(run("setEntryStatus", [entry.id, status, finishTime(entry, status, entries)], { key: `status:${entry.id}` }));
+    // Open the card after a check-off so the note box is right there. A horse
+    // checked off or skipped stays in its place while its card is open, and
+    // goes down to the bottom once it's closed (or the next one is checked).
+    if (status === "done") updateOpen(() => ({ expandedId: entry.id, held: entry.id }));
+    else if (status === "skipped") updateOpen((now) => (now.expandedId === entry.id ? { held: entry.id } : {}));
   }
 
   function addToDay(horseIds: string[], activityIds: string[], note: string, knownHorses: HorseLite[]) {
@@ -310,8 +333,8 @@ export function DayView({
             onRepeat={repeat}
           />
         ) : (
-          <ul className="space-y-3">
-            {entries.map((entry) => (
+          <ul ref={listRef} className="space-y-3">
+            {shown.map((entry) => (
               <EntryCard
                 key={entry.id}
                 entry={entry}

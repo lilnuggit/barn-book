@@ -48,6 +48,7 @@ export function EntryCard({
 
   return (
     <li
+      data-entry={entry.id}
       className={cx(
         "overflow-hidden rounded-2xl bg-surface shadow-card ring-1 transition-colors",
         expanded ? "ring-brand/40" : "ring-line",

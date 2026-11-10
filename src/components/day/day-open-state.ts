@@ -21,6 +21,8 @@ export type DayUi = {
   sheetOpen: boolean;
   /** The entry whose note she's typing in (the keyboard is up). */
   typingIn: string | null;
+  /** A horse just checked off whose card is still open: it stays in its place until the card closes. */
+  held: string | null;
 };
 
 /** What's picked and typed in the day's add sheet. Kept apart, so typing there doesn't redraw the list. */
@@ -37,7 +39,7 @@ export type SheetDraft = {
   typingIn: "note" | "name" | null;
 };
 
-const NO_UI: DayUi = { expandedId: null, sheetOpen: false, typingIn: null };
+const NO_UI: DayUi = { expandedId: null, sheetOpen: false, typingIn: null, held: null };
 const NO_DRAFT: SheetDraft = {
   horseIds: [],
   activityIds: [],

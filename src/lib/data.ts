@@ -17,6 +17,11 @@ export type DayEntry = {
   status: EntryStatus;
   activityIds: string[];
   note: string;
+  /**
+   * When it was checked off or skipped (ms), for the order on the day's list:
+   * finished horses go to the bottom, the latest last. Only on the day's list.
+   */
+  completedAt?: number | null;
 };
 
 const entryWithHorse = {
@@ -199,12 +204,13 @@ export async function getHorseHistory(userId: string, horseId: string, limit: nu
 // ---------- days ----------
 
 export async function getDayEntries(userId: string, date: string): Promise<DayEntry[]> {
-  return db
-    .select(entryWithHorse)
+  const rows = await db
+    .select({ ...entryWithHorse, completedAt: entries.completedAt })
     .from(entries)
     .innerJoin(horses, eq(entries.horseId, horses.id))
     .where(and(eq(entries.userId, userId), eq(entries.date, date)))
     .orderBy(asc(entries.sortOrder), asc(entries.createdAt));
+  return rows.map((r) => ({ ...r, completedAt: r.completedAt?.getTime() ?? null }));
 }
 
 /** A line of a past day's list, as "Repeat list" would copy it. */
