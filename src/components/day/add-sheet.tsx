@@ -4,6 +4,7 @@ import { Plus } from "lucide-react";
 import { useLayoutEffect, useMemo, useRef } from "react";
 import type { ActivityLite, HorseLite } from "@/lib/data";
 import { PALETTE } from "@/lib/palette";
+import { applyHorseChanges } from "@/lib/day-copy";
 import { run, useOverlayWrites } from "@/lib/sync";
 import { Sheet } from "../sheet";
 import { toast } from "../toast";
@@ -69,7 +70,10 @@ export function AddSheet({
     const waiting = overlay.filter((i) => i.name === "createHorse").map((i) => i.meta as HorseLite);
     const byId = new Map<string, HorseLite>();
     for (const h of [...horses, ...waiting, ...created]) if (h && !byId.has(h.id)) byId.set(h.id, h);
-    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    // As renamed, archived or deleted on the phone, before the server has it.
+    return applyHorseChanges([...byId.values()], overlay).sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+    );
   }, [horses, created, overlay]);
 
   const addingFirstHorse = allHorses.length === 0;

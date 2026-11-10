@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { EntryLog } from "@/components/entry-log";
 import { PageHeader } from "@/components/page-header";
+import { StillLoading } from "@/components/still-loading";
 import { Card, cx, EmptyState, Skeleton } from "@/components/ui";
 import { WaitingChangesNote } from "@/components/waiting-note";
 import { requireUserId } from "@/lib/auth";
@@ -220,6 +221,7 @@ function HistorySkeleton() {
     <div className="space-y-4">
       <Skeleton className="h-11" />
       <Skeleton className="h-80 rounded-2xl" />
+      <StillLoading />
       <Skeleton className="h-32 rounded-2xl" />
     </div>
   );

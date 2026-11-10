@@ -3,6 +3,8 @@
 import { RotateCcw } from "lucide-react";
 import { useEffect } from "react";
 import { HorseshoeMark } from "@/components/icons";
+import { toast } from "@/components/toast";
+import { reloadIfReachable } from "@/lib/missing-code";
 
 export default function AppError({ error, retry }: { error: unknown; retry: () => void }) {
   useEffect(() => {
@@ -26,7 +28,12 @@ export default function AppError({ error, retry }: { error: unknown; retry: () =
         </button>
         <button
           type="button"
-          onClick={() => window.location.reload()}
+          onClick={() =>
+            // Not with no signal: the browser would replace the app with its offline page.
+            void reloadIfReachable().then((reloading) => {
+              if (!reloading) toast("Still no signal — try again in a moment");
+            })
+          }
           className="min-h-11 rounded-full px-5 text-[16px] font-semibold text-brand ring-1 ring-line"
         >
           Reload

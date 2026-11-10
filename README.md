@@ -7,9 +7,11 @@ trot sets, lessons, XC…). As the day goes on you check them off and jot a quic
 note. Nothing gets deleted, so you can look back at what any horse did and when.
 
 - **Today**: the day's checklist. Tap the circle to check a horse off; the card
-  opens so you can add a note. Mark a horse skipped (lost a shoe, etc.), change
-  the work, or remove it. ‹ › move between days, so you can plan tomorrow tonight.
-  An empty day offers to repeat yesterday's list or the same day last week.
+  opens so you can add a note, and when you close it (or check the next horse)
+  the horse moves to the bottom, so the ones still to do stay at the top. Mark a
+  horse skipped (lost a shoe, etc.), change the work, or remove it. ‹ › move
+  between days, so you can plan tomorrow tonight. An empty day offers to repeat
+  yesterday's list or the same day last week.
 - **Horses**: every horse with what it did last and how often. Each horse has a
   six-week calendar, when it last did each type of work, its full history, and
   an "About" box for feed, shoeing, and so on.
@@ -29,10 +31,10 @@ the connection hangs), other screens if you've looked at them since your last
 change was saved; the rest fill in once the signal returns (if one can't, the
 app offers a reload). History and a horse's page say when changes on the phone
 aren't in them yet. "Repeat yesterday's list" works with no signal too: the
-lines appear at once and can be checked off straight away. When the live list
-comes back, an open sheet, its picks and a note being typed carry on where they
-were. Other days need signal unless the phone has a copy; the day arrows say
-so. An app left open overnight knows it's a new day and loads today's list as
+lines appear at once and can be checked off straight away, and renamed horses
+and types of work show their new names at once. When the live list comes back,
+an open sheet, its picks and a note being typed carry on where they were. Other
+days need signal; the day arrows say so. An app left open overnight knows it's a new day and loads today's list as
 soon as it can. (The app does need signal to open from scratch.)
 
 ## Stack

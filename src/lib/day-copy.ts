@@ -47,6 +47,43 @@ export function addedLines(item: OutboxItem): DayEntry[] | undefined {
   return Array.isArray(lines) ? (lines as DayEntry[]) : undefined;
 }
 
+/** Horses as changes made on the phone leave them: renamed, recoloured, archived, deleted. */
+export function applyHorseChanges(horses: HorseLite[], changes: OutboxItem[]): HorseLite[] {
+  let out = horses;
+  for (const item of changes) {
+    const [first, second] = item.args as [unknown, unknown];
+    if (item.name === "updateHorse") {
+      const h = first as { id: string; name: string; color: string };
+      const name = h.name.trim();
+      if (out.some((x) => x.id === h.id)) {
+        out = out.map((x) => (x.id === h.id ? { ...x, name: name || x.name, color: h.color } : x));
+      }
+    } else if ((item.name === "setHorseArchived" && second === true) || item.name === "deleteHorse") {
+      if (out.some((x) => x.id === first)) out = out.filter((x) => x.id !== first);
+    }
+  }
+  return out;
+}
+
+/** Work types as changes made on the phone leave them: renamed, recoloured, archived. */
+export function applyActivityChanges(activities: ActivityLite[], changes: OutboxItem[]): ActivityLite[] {
+  let out = activities;
+  for (const item of changes) {
+    const [first, second] = item.args as [unknown, unknown];
+    if (item.name === "updateActivityType") {
+      const a = first as { id: string; name: string; color: string };
+      if (out.some((x) => x.id === a.id)) {
+        out = out.map((x) => (x.id === a.id ? { ...x, name: a.name.trim() || x.name, color: a.color } : x));
+      }
+    } else if (item.name === "setActivityArchived") {
+      if (out.some((x) => x.id === first && x.archived !== second)) {
+        out = out.map((x) => (x.id === first ? { ...x, archived: second as boolean } : x));
+      }
+    }
+  }
+  return out;
+}
+
 /** Layers changes (waiting on the phone, or just confirmed) over a day's entries. */
 export function applyDayChanges(entries: DayEntry[], changes: OutboxItem[], date: string): DayEntry[] {
   let out = entries;
@@ -87,6 +124,17 @@ export function applyDayChanges(entries: DayEntry[], changes: OutboxItem[], date
         break;
       case "deleteEntry":
         out = out.filter((e) => e.id !== first);
+        break;
+      case "updateHorse": {
+        const h = first as { id: string; name: string; color: string };
+        const name = h.name.trim();
+        if (out.some((e) => e.horseId === h.id)) {
+          out = out.map((e) => (e.horseId === h.id ? { ...e, horseName: name || e.horseName, horseColor: h.color } : e));
+        }
+        break;
+      }
+      case "deleteHorse":
+        if (out.some((e) => e.horseId === first)) out = out.filter((e) => e.horseId !== first);
         break;
     }
   }
@@ -159,7 +207,7 @@ export function patchDayCopies(item: OutboxItem) {
   const copies = load();
   if (copies.length === 0) return;
   const owner = item.userId ?? null;
-  const [first, second] = item.args as [unknown, unknown];
+  const second = (item.args as unknown[])[1];
   let changed = false;
   const next: DayCopy[] = [];
   for (const copy of copies) {
@@ -170,52 +218,16 @@ export function patchDayCopies(item: OutboxItem) {
     let c = copy;
     const entries = applyDayChanges(c.entries, [item], c.date);
     if (entries !== c.entries) c = { ...c, entries };
+    const horses = applyHorseChanges(c.horses, [item]);
+    if (horses !== c.horses) c = { ...c, horses };
+    const activities = applyActivityChanges(c.activities, [item]);
+    if (activities !== c.activities) c = { ...c, activities };
     switch (item.name) {
       case "createHorse": {
         const h = item.meta as HorseLite | undefined;
         if (h && !c.horses.some((x) => x.id === h.id)) c = { ...c, horses: [...c.horses, h] };
         break;
       }
-      case "updateHorse": {
-        const h = first as { id: string; name: string; color: string };
-        const name = h.name.trim();
-        if (!c.horses.some((x) => x.id === h.id) && !c.entries.some((e) => e.horseId === h.id)) break;
-        c = {
-          ...c,
-          horses: c.horses.map((x) => (x.id === h.id ? { ...x, name: name || x.name, color: h.color } : x)),
-          entries: c.entries.map((e) =>
-            e.horseId === h.id ? { ...e, horseName: name || e.horseName, horseColor: h.color } : e,
-          ),
-        };
-        break;
-      }
-      case "setHorseArchived":
-        if (second === true && c.horses.some((x) => x.id === first)) {
-          c = { ...c, horses: c.horses.filter((x) => x.id !== first) };
-        }
-        break;
-      case "deleteHorse":
-        if (c.horses.some((x) => x.id === first) || c.entries.some((e) => e.horseId === first)) {
-          c = {
-            ...c,
-            horses: c.horses.filter((x) => x.id !== first),
-            entries: c.entries.filter((e) => e.horseId !== first),
-          };
-        }
-        break;
-      case "updateActivityType": {
-        const a = first as { id: string; name: string; color: string };
-        if (!c.activities.some((x) => x.id === a.id)) break;
-        c = {
-          ...c,
-          activities: c.activities.map((x) => (x.id === a.id ? { ...x, name: a.name.trim() || x.name, color: a.color } : x)),
-        };
-        break;
-      }
-      case "setActivityArchived":
-        if (!c.activities.some((x) => x.id === first && x.archived !== second)) break;
-        c = { ...c, activities: c.activities.map((x) => (x.id === first ? { ...x, archived: second as boolean } : x)) };
-        break;
       case "copyDay":
         // A repeat queued by an older version of the app, without its lines:
         // they get their ids on the server, so this copy no longer shows the day.

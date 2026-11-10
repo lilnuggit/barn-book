@@ -5,7 +5,9 @@ import { Suspense } from "react";
 import { AddHorseButton, HorsesOnTheirWay } from "@/components/horses/horse-sheets";
 import { HorseshoeMark } from "@/components/icons";
 import { PageHeader } from "@/components/page-header";
+import { StillLoading } from "@/components/still-loading";
 import { ActivityChip, EmptyState, HorseAvatar, SectionTitle, Skeleton } from "@/components/ui";
+import { WaitingChangesNote } from "@/components/waiting-note";
 import { requireUserId } from "@/lib/auth";
 import { getActivityTypes, getHorseSummaries, type ActivityLite, type HorseSummary } from "@/lib/data";
 import { agoLabel } from "@/lib/dates";
@@ -18,6 +20,7 @@ export default function HorsesPage() {
     <>
       <PageHeader title="Horses" action={<AddHorseButton />} />
       <div className="mx-auto max-w-xl px-4 pt-4">
+        <WaitingChangesNote className="mb-4" />
         <Suspense fallback={<ListSkeleton />}>
           <HorseList />
         </Suspense>
@@ -123,6 +126,7 @@ function ListSkeleton() {
       {[0, 1, 2, 3].map((i) => (
         <Skeleton key={i} className="h-[68px] rounded-2xl" />
       ))}
+      <StillLoading />
     </div>
   );
 }

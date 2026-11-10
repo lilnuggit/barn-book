@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import { PageHeader } from "@/components/page-header";
 import { ActivityManager } from "@/components/settings/activity-manager";
 import { SignOutRow } from "@/components/settings/sign-out-row";
+import { StillLoading } from "@/components/still-loading";
 import { Card, SectionTitle, Skeleton } from "@/components/ui";
 import { requireUserId } from "@/lib/auth";
 import { countEntries, getActivityTypes } from "@/lib/data";
@@ -17,7 +18,14 @@ export default function SettingsPage() {
     <>
       <PageHeader title="Settings" />
       <div className="mx-auto max-w-xl space-y-8 px-4 pt-5">
-        <Suspense fallback={<Skeleton className="h-[640px] rounded-2xl" />}>
+        <Suspense
+          fallback={
+            <div>
+              <StillLoading />
+              <Skeleton className="mt-4 h-[640px] rounded-2xl" />
+            </div>
+          }
+        >
           <Activities />
         </Suspense>
 

@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import { EntryLog } from "@/components/entry-log";
 import { EditHorseButton } from "@/components/horses/horse-sheets";
 import { PageHeader } from "@/components/page-header";
+import { StillLoading } from "@/components/still-loading";
 import { WaitingChangesNote } from "@/components/waiting-note";
 import { ActivityChip, Card, cx, SectionTitle, Skeleton } from "@/components/ui";
 import { requireUserId } from "@/lib/auth";
@@ -285,6 +286,7 @@ function HorseSkeleton() {
       </div>
       <div className="mx-auto max-w-xl space-y-4 px-4 pt-5">
         <Skeleton className="h-64 rounded-2xl" />
+        <StillLoading />
         <Skeleton className="h-40 rounded-2xl" />
       </div>
     </>

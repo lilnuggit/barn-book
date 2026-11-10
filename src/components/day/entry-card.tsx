@@ -237,12 +237,13 @@ function StatusSwitch({ status, onChange }: { status: EntryStatus; onChange: (s:
 }
 
 /**
- * What's in each note box that has the keyboard. A copy of the screen that
- * takes over meanwhile (the live list replacing the one kept on the phone)
- * carries on from it, so even the last few letters, not yet handed to the
- * phone's queue, aren't lost.
+ * What she has typed in each note box and not yet handed to the phone's queue.
+ * A copy of the screen that takes over meanwhile (the live list replacing the
+ * one kept on the phone) carries on with it, so even the last few letters
+ * aren't lost. Without unsent typing it starts from the note as it is now
+ * (which may be newer, from another device), not from the old box's text.
  */
-const typedNotes = new Map<string, string>();
+const typedNotes = new Map<string, { text: string; unsent: boolean }>();
 
 /**
  * Saves a moment after typing stops, when the field loses focus, when the
@@ -273,19 +274,30 @@ function NoteField({
 }) {
   const id = useId();
   const noSignal = useNoSignal();
-  const [value, setValue] = useState(() => (typingHere ? typedNotes.get(entryId) : undefined) ?? initial);
+  // Typing carried over from the box this one replaced (see typedNotes).
+  const [carried] = useState(() => {
+    const t = typingHere ? typedNotes.get(entryId) : undefined;
+    return t?.unsent ? t.text : null;
+  });
+  const [value, setValue] = useState(carried ?? initial);
   const [sent, setSent] = useState(false);
   // Typed here and not handed to the phone's queue yet.
   const [typing, setTyping] = useState(false);
-  // The box has the keyboard: what's in it is hers, and nothing replaces it.
+  // The box has the keyboard...
   const [focused, setFocused] = useState(false);
+  // ...and she has typed in it since it last took the note: what's in it is hers.
+  const [edited, setEdited] = useState(carried !== null);
   const [shownInitial, setShownInitial] = useState(initial);
-  if (initial !== shownInitial && !typing && !focused) {
+  if (initial !== shownInitial && !typing && !(focused && edited)) {
     // The note changed somewhere else (another device, another copy of this
-    // screen) while she wasn't in the box: show that. Spaces or new lines at
-    // the ends don't count: that's only the server tidying what she typed.
+    // screen), or her own save came back: show that, unless she's in the
+    // middle of her own edit. Spaces or new lines at the ends don't count:
+    // that's only the server tidying what she typed.
     setShownInitial(initial);
-    if (initial.trim() !== value.trim()) setValue(initial);
+    if (initial.trim() !== value.trim()) {
+      setValue(initial);
+      setEdited(false);
+    }
   }
   const ref = useRef<HTMLTextAreaElement>(null);
   const lastSent = useRef(initial);
@@ -307,6 +319,7 @@ function NoteField({
     clearTimeout(timer.current);
     setTyping(false);
     const next = latest.current;
+    if (typedNotes.has(entryId)) typedNotes.set(entryId, { text: next, unsent: false });
     if (next.trim() === lastSent.current.trim()) return;
     lastSent.current = next;
     setSent(true);
@@ -320,16 +333,17 @@ function NoteField({
   }, [initial]);
 
   // This screen replaced another copy of itself while she was typing here:
-  // carry on with what's in the box there (she may have typed a letter or two
-  // more while this one was being drawn), and keep the keyboard up, with the
-  // cursor at the end.
+  // keep the keyboard up, with the cursor at the end. If she was mid-edit
+  // there, carry on with that box's text (she may have typed a letter or two
+  // more while this one was being drawn; the other box has just sent it).
   useEffect(() => {
     const el = ref.current;
     if (!typingHere || !el || document.activeElement === el) return;
     const typed = typedNotes.get(entryId);
-    if (typed !== undefined && typed !== el.value) {
-      el.value = typed; // so the cursor goes to the end of it
-      setValue(typed);
+    if (carried !== null && typed && typed.text !== el.value) {
+      el.value = typed.text; // so the cursor goes to the end of it
+      lastSent.current = typed.text;
+      setValue(typed.text);
     }
     el.focus();
     el.setSelectionRange(el.value.length, el.value.length);
@@ -398,20 +412,21 @@ function NoteField({
         data-note-for={entryId}
         onChange={(e) => {
           setValue(e.target.value);
-          typedNotes.set(entryId, e.target.value);
+          typedNotes.set(entryId, { text: e.target.value, unsent: true });
+          setEdited(true);
           setTyping(true);
           setSent(false); // new text isn't saved yet: no "Saved" until it is
           clearTimeout(timer.current);
           timer.current = setTimeout(flush, 900);
         }}
-        onFocus={(e) => {
+        onFocus={() => {
           setFocused(true);
-          typedNotes.set(entryId, e.currentTarget.value);
           onTyping(true);
         }}
         onBlur={() => {
           flush();
           setFocused(false);
+          setEdited(false); // what she typed is saved now
           typedNotes.delete(entryId);
           // Unless the same note has the keyboard again at once (another copy
           // of this screen took over).

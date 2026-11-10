@@ -85,7 +85,13 @@ export function AddHorseButton() {
       const same = horsesOnTheirWay(overlay)
         .filter((h) => unsent.has(h.id))
         .find((h) => h.name.toLowerCase() === trimmed.toLowerCase());
-      if (same && !window.confirm(`${same.name} is already being added (not synced yet). Add another horse called ${trimmed}?`)) return;
+      if (same && !window.confirm(`${same.name} is already being added (not synced yet). Add another horse called ${trimmed}?`)) {
+        // No second one: it's on its way already, so there's nothing to keep.
+        resetForm(color);
+        session.end();
+        setOpen(false);
+        return;
+      }
       draft.current = { id: crypto.randomUUID(), content };
     }
     const horse = { id: draft.current.id, name: trimmed, color };

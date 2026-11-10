@@ -489,6 +489,8 @@ function retryRefresh(ms: number) {
 }
 
 let checksTimedOut = 0;
+/** When the server last answered a save (a check that failed before then is moot). */
+let lastAnswerAt = 0;
 
 /**
  * The server answers at all (a quick check, so nothing is left for Next to
@@ -496,6 +498,7 @@ let checksTimedOut = 0;
  * out (a slow start, or a connection that hangs) does after the second.
  */
 async function reachable() {
+  const startedAt = Date.now();
   try {
     await fetch(window.location.href, {
       method: "HEAD",
@@ -507,6 +510,7 @@ async function reachable() {
     setUnreachable(false);
     return true;
   } catch (error) {
+    if (lastAnswerAt >= startedAt) return true; // a save got through meanwhile
     const timedOut = error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError");
     checksTimedOut = timedOut ? checksTimedOut + 1 : 0;
     if (!timedOut || checksTimedOut >= 2) setUnreachable(true);
@@ -515,7 +519,9 @@ async function reachable() {
 }
 
 function sendRefresh() {
-  if (!refreshWanted || refreshing || refreshWait) return;
+  // Also while "No signal" is on with no reload wanted: keep checking, so it
+  // goes off as soon as the server answers.
+  if ((!refreshWanted && !unreachable) || refreshing || refreshWait) return;
   // Not with no signal, nor under an open sheet: the reload can bring a new
   // day's list that replaces it. And only once the server answers, since
   // Next holds a reload it can't send and applies it the moment the signal
@@ -529,9 +535,9 @@ function sendRefresh() {
   }
   refreshing = true;
   void reachable().then((ok) => {
-    if (!ok || knownOffline || busyEditing()) {
+    if (!ok || knownOffline || busyEditing() || !refreshWanted) {
       refreshing = false;
-      if (!knownOffline) retryRefresh(ok ? 2000 : 5000);
+      if (!knownOffline && (refreshWanted || unreachable)) retryRefresh(ok ? 2000 : 5000);
       return;
     }
     sendRefreshNow();
@@ -596,7 +602,10 @@ async function send(item: OutboxItem): Promise<ActionResult> {
   try {
     const result = await reply;
     if (!result || typeof result.ok !== "boolean") throw new Error(`Unexpected reply from ${item.name}`);
-    setUnreachable(false); // the server answered
+    // The server answered.
+    lastAnswerAt = Date.now();
+    checksTimedOut = 0;
+    setUnreachable(false);
     return result;
   } finally {
     clearTimeout(timer);

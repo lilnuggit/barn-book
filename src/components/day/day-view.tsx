@@ -25,7 +25,7 @@ import { HorseshoeMark } from "../icons";
 import { headerButtonClass } from "../page-header";
 import { toast } from "../toast";
 import { cx } from "../ui";
-import { addedLines, applyDayChanges, readDayCopy, saveDayCopy } from "@/lib/day-copy";
+import { addedLines, applyActivityChanges, applyDayChanges, saveDayCopy } from "@/lib/day-copy";
 import { busyEditing } from "@/lib/editing";
 import { AddSheet } from "./add-sheet";
 import { sheetDraftEmpty, useDayScreen, useDayUi } from "./day-open-state";
@@ -145,12 +145,22 @@ export function DayView({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the phone's clock, read each time the screen shows
     setDayWhenShown(phoneToday());
   }, []);
-  const staleToday = date === dayWhenShown && now > dayWhenShown;
-  // When she last came back to the app (unlocked the phone, switched back to it).
-  const backAt = useRef(0);
+  // Today's list ("/", loaded as the server's today) is stale once the
+  // phone's day has moved past it, however it came back on screen.
+  const staleToday = (date === dayWhenShown && now > dayWhenShown) || (!pinned && date === today && now > today);
+  // What was open when she came back to the app (unlocked the phone, switched
+  // back to it): the add sheet, and the note box that had the keyboard.
+  const sheetOpenNow = useRef(sheetOpen);
+  useLayoutEffect(() => {
+    sheetOpenNow.current = sheetOpen;
+  });
+  const leftOpen = useRef<{ at: number; sheet: boolean; note: Element | null } | null>(null);
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") backAt.current = Date.now();
+      if (document.visibilityState !== "visible") return;
+      const el = document.activeElement;
+      const note = el instanceof HTMLTextAreaElement && el.dataset.noteFor ? el : null;
+      leftOpen.current = { at: Date.now(), sheet: sheetOpenNow.current, note };
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
@@ -160,15 +170,17 @@ export function DayView({
   useEffect(() => {
     if ((!behind && !staleToday) || savedAt !== undefined) return;
     function moveOn() {
-      if (staleToday && Date.now() - backAt.current < 5000) {
+      const left = leftOpen.current;
+      if (staleToday && left && Date.now() - left.at < 5000) {
         // Just back on the phone, the next morning: what was left open on
         // this list last night mustn't hold today's back (or catch the first
         // taps of the day): an add sheet with nothing in it closes, and a note
         // box lets go of the keyboard (its text was saved when she left, and
-        // letting go saves it again).
-        updateOpen((ui) => (ui.sheetOpen && sheetDraftEmpty(date) ? { sheetOpen: false } : {}));
-        const el = document.activeElement;
-        if (el instanceof HTMLTextAreaElement && el.dataset.noteFor) el.blur();
+        // letting go saves it again). Once, and only what was open then: not
+        // what she opens now.
+        leftOpen.current = null;
+        if (left.sheet) updateOpen((ui) => (ui.sheetOpen && sheetDraftEmpty(date) ? { sheetOpen: false } : {}));
+        if (left.note && document.activeElement === left.note && left.note instanceof HTMLElement) left.note.blur();
       }
       // Not while she's in the middle of something: a new day's list would
       // replace this one, open sheet and all.
@@ -231,7 +243,9 @@ export function DayView({
     updateOpen(() => ({ sheetOpen: open }));
   }
 
-  const activityById = useMemo(() => new Map(activities.map((a) => [a.id, a])), [activities]);
+  // Work types as renamed or archived on the phone, before the server has it.
+  const shownActivities = useMemo(() => applyActivityChanges(activities, overlay), [activities, overlay]);
+  const activityById = useMemo(() => new Map(shownActivities.map((a) => [a.id, a])), [shownActivities]);
   const waiting = useMemo(() => waitingEntryIds(pending, offline || stuck), [pending, offline, stuck]);
   const notesSyncing = useMemo(
     () => new Set(pending.filter((i) => i.name === "saveEntryNote").map((i) => i.args[0] as string)),
@@ -342,7 +356,7 @@ export function DayView({
               <EntryCard
                 key={entry.id}
                 entry={entry}
-                activities={activities}
+                activities={shownActivities}
                 activityById={activityById}
                 expanded={expandedId === entry.id}
                 onToggleExpanded={() => {
@@ -394,7 +408,7 @@ export function DayView({
         onClose={() => setSheetOpen(false)}
         title={`Add to ${relativeDayName(date, now, locale) === "Today" ? "today" : formatShort(date, locale)}`}
         horses={horses}
-        activities={activities}
+        activities={shownActivities}
         horseIdsOnDay={new Set(entries.map((e) => e.horseId))}
         onAdd={addToDay}
       />
@@ -456,16 +470,11 @@ function DayHeader({
   // server can still have the phone's old time zone).
   const href = (d: string) => (d === now && d === today ? "/" : `/?d=${d}`);
   const round = "relative grid size-10 place-items-center rounded-full bg-header-fill active:opacity-70";
-  // With no signal, a day opens only if the phone can draw it: today's list
-  // (from Next's cache, or the phone's copy, like the Today tab) and days it
-  // has a copy of. Any other would only open (suddenly) once the signal is
-  // back, so say so instead.
-  function opensOffline(url: string) {
-    const d = new URL(url, window.location.href).searchParams.get("d");
-    return d === null || readDayCopy(d) !== null;
-  }
+  // Another day needs the server: with no signal, Next would hold the tap
+  // and open that day suddenly once the signal is back (in the middle of
+  // whatever she's doing by then). Say so instead.
   function stayOffline(e: MouseEvent<HTMLAnchorElement>) {
-    if (!offline || opensOffline(e.currentTarget.href)) return;
+    if (!offline) return;
     e.preventDefault(); // Next's Link then doesn't navigate…
     ignoreClick(e.nativeEvent); // …and the save queue doesn't wait for a page change
     toast(NO_SIGNAL_DAYS);
@@ -503,7 +512,7 @@ function DayHeader({
             onClick={(e) => e.currentTarget.showPicker?.()}
             onChange={(e) => {
               if (!isISODate(e.target.value)) return;
-              if (offline && !opensOffline(href(e.target.value))) {
+              if (offline) {
                 toast(NO_SIGNAL_DAYS);
                 return;
               }
