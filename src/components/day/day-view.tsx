@@ -19,6 +19,7 @@ import {
 } from "@/lib/dates";
 import {
   forgetConfirmedBefore,
+  ignoreClick,
   notePageChange,
   refreshWhenPossible,
   run,
@@ -37,6 +38,8 @@ import { EntryCard } from "./entry-card";
 type Props = {
   date: string;
   today: string;
+  /** The page was opened for a particular day (?d=), not just "today". */
+  pinned: boolean;
   locale: string;
   entries: DayEntry[];
   horses: HorseLite[];
@@ -120,7 +123,8 @@ function report(result: SyncResult) {
   if (!result.ok && result.reason === "invalid") toast(result.error);
 }
 
-export function DayView({ date, today, locale, entries: serverEntries, horses, activities, suggestions }: Props) {
+export function DayView({ date, today, pinned, locale, entries: serverEntries, horses, activities, suggestions }: Props) {
+  const router = useRouter();
   const pending = usePendingWrites();
   const overlay = useOverlayWrites();
   const offline = useOffline();
@@ -129,9 +133,20 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
   // moved on since this page loaded, get the new day's list once there's signal.
   const now = usePhoneToday(today);
   const newDay = now > today;
+  // This list was "today" when it loaded and the phone is now on the next day.
+  const staleToday = newDay && date === today;
   useEffect(() => {
-    if (newDay) refreshWhenPossible();
-  }, [newDay]);
+    if (!newDay) return;
+    if (staleToday && pinned) {
+      // Opened as /?d=<that day>: reloading it would show the same day. Go to
+      // today's list instead, once there's signal to load it.
+      if (offline) return;
+      notePageChange("/");
+      router.replace("/");
+    } else {
+      refreshWhenPossible();
+    }
+  }, [newDay, staleToday, pinned, offline, router]);
   // Changes show instantly: each one is stored on the phone the moment it's
   // made, and the screen is drawn from the server's data plus those changes.
   // (Deliberately no transition per save: a pending one would hold up every
@@ -179,13 +194,12 @@ export function DayView({ date, today, locale, entries: serverEntries, horses, a
     <>
       <DayHeader
         date={date}
-        today={today}
         now={now}
         locale={locale}
         done={done}
         total={entries.length}
         offline={offline}
-        newDay={newDay && date === today}
+        newDay={staleToday}
       />
 
       <div className="mx-auto max-w-xl px-4 pt-4 pb-20">
@@ -280,7 +294,6 @@ function LoadingHint() {
 
 function DayHeader({
   date,
-  today,
   now,
   locale,
   done,
@@ -289,9 +302,7 @@ function DayHeader({
   newDay,
 }: {
   date: string;
-  /** The server's today, when the page loaded (its list is at "/"). */
-  today: string;
-  /** The phone's today, for the labels. */
+  /** The phone's today: labels and links follow it. */
   now: string;
   locale: string;
   done: number;
@@ -312,14 +323,16 @@ function DayHeader({
           : offset < 0
             ? `${-offset} days ago`
             : `In ${offset} days`;
-  const href = (d: string) => (d === today ? "/" : `/?d=${d}`);
+  // "/" is whatever day it is when the server answers, so only the phone's
+  // today may link there (the page's own idea of today can be a day behind).
+  const href = (d: string) => (d === now ? "/" : `/?d=${d}`);
   const round = "relative grid size-10 place-items-center rounded-full bg-header-fill active:opacity-70";
   // Another day needs the server; with no signal the tap would only take
   // effect (suddenly) once the signal is back. Say so instead.
   function stayOffline(e: MouseEvent) {
     if (!offline) return;
     e.preventDefault(); // Next's Link then doesn't navigate…
-    e.stopPropagation(); // …and the save queue doesn't wait for a page change
+    ignoreClick(e.nativeEvent); // …and the save queue doesn't wait for a page change
     toast(NO_SIGNAL_DAYS);
   }
 

@@ -19,6 +19,7 @@ import {
   updateActivityType,
   updateHorse,
 } from "@/app/actions";
+import { toast } from "@/components/toast";
 import type { ActionResult, SyncResult } from "./action-result";
 
 /*
@@ -274,7 +275,11 @@ export function forgetConfirmedBefore(time: number) {
 
 function remember(item: OutboxItem) {
   const at = Date.now();
-  recent = [...recent, { item, at }];
+  // A newer confirmed change to the same thing replaces the older one: they
+  // expire one by one, and the older must never outlive it on screen.
+  const sameThing = (r: { item: OutboxItem }) =>
+    item.key !== undefined && r.item.key === item.key && (r.item.userId ?? null) === (item.userId ?? null);
+  recent = [...recent.filter((r) => !sameThing(r)), { item, at }];
   emit();
   // Normally the page's fresh data arrives first (forgetConfirmedBefore). This
   // is a fallback in case that page never refreshes — but not while the queue
@@ -310,6 +315,12 @@ export function discard(ids: string[]) {
 
 let movingTo: { url: string; from: string } | null = null;
 let watchingPageChanges = false;
+const ignoredClicks = new WeakSet<Event>();
+
+/** A tap on a link that the app cancelled (e.g. no signal): it won't change page. */
+export function ignoreClick(event: Event) {
+  ignoredClicks.add(event);
+}
 
 function isCurrentPage(url: string) {
   const to = new URL(url, window.location.href);
@@ -332,7 +343,7 @@ function watchPageChanges() {
   if (watchingPageChanges || typeof document === "undefined") return;
   watchingPageChanges = true;
   document.addEventListener("click", (e) => {
-    if (!e.defaultPrevented || !(e.target instanceof Element)) return;
+    if (!e.defaultPrevented || ignoredClicks.has(e) || !(e.target instanceof Element)) return;
     const link = e.target.closest("a[href]");
     if (!(link instanceof HTMLAnchorElement) || link.hasAttribute("download")) return;
     if (link.origin !== window.location.origin || (link.target && link.target !== "_self")) return;
@@ -589,6 +600,9 @@ async function process(id: string): Promise<void> {
     } else {
       commit(stored().filter((i) => i.id !== id));
       setStuck(false); // the server answered
+      // Made before the app was closed or reloaded, so no screen is waiting to
+      // say it was refused: say it here.
+      if (!result.ok && result.reason === "invalid" && !waiters.has(id)) toast(`${describe(item)}: ${result.error}`);
       if (result.ok) {
         remember(item);
         refreshWanted = false; // saves refresh the page too
@@ -611,6 +625,24 @@ async function process(id: string): Promise<void> {
   } finally {
     started.delete(id);
     scheduled.delete(id);
+  }
+}
+
+/** Names a change in a message, for when it was made before the app restarted. */
+function describe(item: OutboxItem): string {
+  const name = (item.args[0] as { name?: unknown } | undefined)?.name;
+  const called = typeof name === "string" ? name.trim() : "";
+  switch (item.name) {
+    case "updateActivityType":
+      return called ? `Couldn’t rename a type of work to “${called}”` : "Couldn’t rename a type of work";
+    case "createActivityType":
+      return called ? `Couldn’t add “${called}”` : "Couldn’t add a type of work";
+    case "updateHorse":
+      return called ? `Couldn’t save the changes to ${called}` : "Couldn’t save a horse’s changes";
+    case "createHorse":
+      return called ? `Couldn’t add ${called}` : "Couldn’t add a horse";
+    default:
+      return "A change couldn’t be saved";
   }
 }
 

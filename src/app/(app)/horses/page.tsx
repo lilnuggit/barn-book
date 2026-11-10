@@ -2,7 +2,7 @@ import { ChevronRight } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
-import { AddHorseButton } from "@/components/horses/horse-sheets";
+import { AddHorseButton, HorsesOnTheirWay } from "@/components/horses/horse-sheets";
 import { HorseshoeMark } from "@/components/icons";
 import { PageHeader } from "@/components/page-header";
 import { ActivityChip, EmptyState, HorseAvatar, SectionTitle, Skeleton } from "@/components/ui";
@@ -33,17 +33,19 @@ async function HorseList() {
   const activityById = new Map(activities.map((a) => [a.id, a]));
   const active = horses.filter((h) => !h.archived);
   const archived = horses.filter((h) => h.archived);
-
   if (horses.length === 0) {
     return (
-      <EmptyState icon={<HorseshoeMark className="size-14 text-brand" />} title="No horses yet">
-        Tap <strong>Add horse</strong> above to add the horses you work with.
-      </EmptyState>
+      <HorsesOnTheirWay known={[]}>
+        <EmptyState icon={<HorseshoeMark className="size-14 text-brand" />} title="No horses yet">
+          Tap <strong>Add horse</strong> above to add the horses you work with.
+        </EmptyState>
+      </HorsesOnTheirWay>
     );
   }
 
   return (
     <>
+      <HorsesOnTheirWay known={horses.map((h) => h.id)} />
       <SectionTitle>In work · {active.length}</SectionTitle>
       <ul className="overflow-hidden rounded-2xl bg-surface shadow-card ring-1 ring-line">
         {active.map((h) => (

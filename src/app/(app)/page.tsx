@@ -39,6 +39,7 @@ async function Day({ searchParams }: { searchParams: PageProps<"/">["searchParam
       key={date}
       date={date}
       today={today}
+      pinned={isISODate(params.d)}
       locale={locale}
       entries={entries}
       horses={horses}

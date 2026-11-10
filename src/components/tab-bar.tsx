@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSelectedLayoutSegment } from "next/navigation";
 import { useOffline } from "next/offline";
 import { Suspense } from "react";
+import { useMissingCode } from "@/lib/missing-code";
 import { usePendingWrites, useSyncStuck } from "@/lib/sync";
 import { HorseshoeIcon } from "./icons";
 import { cx } from "./ui";
@@ -37,6 +38,7 @@ function TabBarView({ active }: { active: string | null | undefined }) {
       aria-label="Main"
       className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/90 pb-safe backdrop-blur-xl backdrop-saturate-150"
     >
+      <MissingCode />
       <SyncStatus />
       <ul className="mx-auto grid max-w-xl grid-cols-4">
         {TABS.map(({ href, segment: s, label, Icon }) => {
@@ -59,6 +61,25 @@ function TabBarView({ active }: { active: string | null | undefined }) {
         })}
       </ul>
     </nav>
+  );
+}
+
+/**
+ * Part of a screen opened with no signal couldn't download (see missing-code).
+ * Once the signal is back, offer a reload; the rider picks the moment, since
+ * an open sheet would be lost (changes themselves are saved on the phone).
+ */
+function MissingCode() {
+  const offline = useOffline();
+  const missing = useMissingCode();
+  if (offline || !missing) return null;
+  return (
+    <p className="flex items-center justify-center gap-2 bg-brand-soft px-4 text-xs font-medium text-brand">
+      <span>Part of this screen couldn’t load.</span>
+      <button type="button" onClick={() => window.location.reload()} className="min-h-8 px-1 font-semibold underline">
+        Reload
+      </button>
+    </p>
   );
 }
 

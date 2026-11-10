@@ -1,17 +1,20 @@
 "use client";
 
-import { Archive, ArchiveRestore, Pencil, Plus, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, CloudOff, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useOffline } from "next/offline";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import type { SyncResult } from "@/lib/action-result";
 import { PALETTE } from "@/lib/palette";
-import { notePageChange, run, useOverlayWrites } from "@/lib/sync";
+import { notePageChange, run, useOverlayWrites, usePendingWrites } from "@/lib/sync";
 import { ColorPicker } from "../color-picker";
 import { headerButtonClass } from "../page-header";
 import { Sheet, SheetError } from "../sheet";
 import { SAVED_OFFLINE, SAVED_ON_PHONE, useSheetSession, useStopWaiting } from "../sheet-save";
 import { toast } from "../toast";
+import { HorseAvatar } from "../ui";
+
+type NewHorse = { id: string; name: string; color: string };
 
 // Every change here is stored on the phone first (like the day's list), so it
 // survives a dropped signal and iOS closing the app, and goes out in order.
@@ -22,6 +25,7 @@ const labelClass = "mb-2 block text-[13px] font-semibold tracking-wide text-ink-
 
 export function AddHorseButton() {
   const offline = useOffline();
+  const overlay = useOverlayWrites();
   const session = useSheetSession();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -73,7 +77,13 @@ export function AddHorseButton() {
     const trimmed = name.trim();
     if (!trimmed || session.busy) return;
     const content = `${trimmed}|${color}`;
-    if (draft.current?.content !== content) draft.current = { id: crypto.randomUUID(), content };
+    // A horse by this name is already on its way (stored on the phone, or just
+    // confirmed): save it under the same id, so it can't be created twice.
+    const onItsWay = overlay.findLast(
+      (i) => i.name === "createHorse" && (i.meta as NewHorse).name.toLowerCase() === trimmed.toLowerCase(),
+    )?.meta as NewHorse | undefined;
+    if (onItsWay) draft.current = { id: onItsWay.id, content };
+    else if (draft.current?.content !== content) draft.current = { id: crypto.randomUUID(), content };
     const horse = { id: draft.current.id, name: trimmed, color };
     const answered = session.send(run("createHorse", [horse], { key: `horse:${horse.id}`, meta: horse }));
 
@@ -358,5 +368,32 @@ export function EditHorseButton({
         </fieldset>
       </Sheet>
     </>
+  );
+}
+
+/**
+ * Horses added on this phone that the server hasn't got yet, so a slow or
+ * offline add doesn't look like it didn't happen.
+ */
+export function HorsesOnTheirWay({ known, children }: { known: string[]; children?: ReactNode }) {
+  const pending = usePendingWrites();
+  const horses = pending
+    .filter((i) => i.name === "createHorse")
+    .map((i) => i.meta as NewHorse)
+    .filter((h, index, all) => h && !known.includes(h.id) && all.findIndex((x) => x.id === h.id) === index);
+  // `children`: what to show when there are none (the empty list's message).
+  if (horses.length === 0) return children ?? null;
+  return (
+    <ul className="mb-4 overflow-hidden rounded-2xl bg-surface shadow-card ring-1 ring-line">
+      {horses.map((h) => (
+        <li key={h.id} className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-b-0">
+          <HorseAvatar name={h.name} color={h.color} />
+          <span className="min-w-0 flex-1 truncate text-[17px] font-semibold">{h.name}</span>
+          <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-ink-3">
+            <CloudOff className="size-3.5" aria-hidden /> Not synced yet
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
