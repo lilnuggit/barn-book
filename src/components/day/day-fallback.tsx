@@ -9,21 +9,30 @@ import { DayView } from "./day-view";
 
 /**
  * Shown while a day's list loads. With no signal that can take until the
- * signal returns, so draw the day from the copy kept on the phone instead.
+ * signal returns, and on Wi-Fi with no internet the request can just hang:
+ * so draw the day from the copy kept on the phone instead (with no signal at
+ * once, otherwise after a few seconds).
  */
 export function DayFallback() {
   const offline = useOffline();
-  const [copy, setCopy] = useState<{ day: DayCopy; pinned: boolean } | null>(null);
+  const [slow, setSlow] = useState(false);
+  const [copy, setCopy] = useState<{ day: DayCopy; pinned: boolean; today: string } | null>(null);
 
   useEffect(() => {
-    if (!offline) return;
+    const timer = setTimeout(() => setSlow(true), 3000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!offline && !slow) return;
     const d = new URLSearchParams(window.location.search).get("d");
     const pinned = isISODate(d);
-    const date = pinned ? d : todayInTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
-    const day = readDayCopy(date);
+    // The phone's own date is the best idea of "today" there is without the server.
+    const today = todayInTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const day = readDayCopy(pinned ? d : today);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reads the phone's storage, only known after mount
-    setCopy(day ? { day, pinned } : null);
-  }, [offline]);
+    setCopy(day ? { day, pinned, today } : null);
+  }, [offline, slow]);
 
   if (!copy) {
     return (
@@ -37,12 +46,12 @@ export function DayFallback() {
       </>
     );
   }
-  const { day, pinned } = copy;
+  const { day, pinned, today } = copy;
   return (
     <DayView
       key={day.date}
       date={day.date}
-      today={day.today}
+      today={today}
       pinned={pinned}
       savedAt={day.savedAt}
       locale={day.locale}

@@ -86,11 +86,13 @@ export function ActivityManager({ activities: serverActivities }: { activities: 
     const at = next.findIndex((a) => a.id === id);
     const [item] = next.splice(at, 1);
     next.splice(Math.max(0, Math.min(next.length, at + by)), 0, item!);
-    void run("reorderActivityTypes", [next.map((a) => a.id)], { key: "activity-order" }).then((r) => report(r));
+    void run("reorderActivityTypes", [next.map((a) => a.id)], { key: "activity-order", replaceInPlace: false }).then(
+      (r) => report(r),
+    );
   }
 
   function restore(a: ActivityLite) {
-    void run("setActivityArchived", [a.id, false], { key: `activity-archive:${a.id}` }).then((r) =>
+    void run("setActivityArchived", [a.id, false], { key: `activity-archive:${a.id}`, replaceInPlace: false }).then((r) =>
       report(r, `${a.name} is back on the list`),
     );
   }
@@ -216,6 +218,7 @@ function AddActivityRow({ nextColor, existing }: { nextColor: string; existing: 
     // Clearing the box is what stops a double tap from adding it twice.
     const sending = run("createActivityType", [{ name: trimmed, color: nextColor }], {
       key: `activity-new:${trimmed.toLowerCase()}`,
+      replaceInPlace: false,
     });
     setName(""); // it shows in the list straight away
     if (offline) toast(`${trimmed}: ${SAVED_OFFLINE.toLowerCase()}`);
@@ -330,13 +333,18 @@ function EditActivitySheet({ activity, onClose }: { activity: ActivityLite | nul
 
   function save() {
     if (!activity || !name.trim() || busy) return;
-    submit(run("updateActivityType", [{ id: activity.id, name, color }], { key: `activity-edit:${activity.id}` }));
+    submit(
+      run("updateActivityType", [{ id: activity.id, name, color }], {
+        key: `activity-edit:${activity.id}`,
+        replaceInPlace: false,
+      }),
+    );
   }
 
   function archive() {
     if (!activity || busy) return;
     submit(
-      run("setActivityArchived", [activity.id, true], { key: `activity-archive:${activity.id}` }),
+      run("setActivityArchived", [activity.id, true], { key: `activity-archive:${activity.id}`, replaceInPlace: false }),
       `${activity.name} archived`,
     );
   }

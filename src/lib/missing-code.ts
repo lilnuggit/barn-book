@@ -11,8 +11,8 @@ import { useEffect, useState, useSyncExternalStore } from "react";
  * when the screen on show is visibly stuck.
  */
 
-const failed = new Set<string>(); // failed, waiting to see if the browser's own retry works
-const missing = new Set<string>(); // failed and not loaded since
+const failed = new Map<string, string>(); // failed (→ screen it was for), waiting for the browser's own retry
+const missing = new Map<string, string>(); // failed and not loaded since (→ the screen it was for)
 const listeners = new Set<() => void>();
 let watching = false;
 
@@ -40,11 +40,12 @@ function watch() {
     (e) => {
       const path = codePath(e.target);
       if (!path) return;
-      failed.add(path);
+      const screen = window.location.pathname;
+      failed.set(path, screen);
       // The browser retries once, within about half a second.
       setTimeout(() => {
         if (failed.delete(path)) {
-          missing.add(path);
+          missing.set(path, screen);
           notify();
         }
       }, 1500);
@@ -72,6 +73,7 @@ function subscribe(listener: () => void) {
   };
 }
 
+/** Some screen's code failed to download and hasn't loaded since. */
 function useMissingCode(): boolean {
   return useSyncExternalStore(
     subscribe,
@@ -89,8 +91,10 @@ export function useStuckScreen(active: boolean): boolean {
     if (!watching) return;
     let seen = 0;
     const timer = setInterval(() => {
+      // Only the screen whose code failed, and only while it shows placeholders.
+      const thisScreen = [...missing.values()].includes(window.location.pathname);
       const placeholders = [...document.querySelectorAll(".animate-pulse")].some((el) => el.checkVisibility?.() ?? true);
-      seen = placeholders ? seen + 1 : 0;
+      seen = thisScreen && placeholders ? seen + 1 : 0;
       setStuck(seen >= 3);
     }, 1000);
     return () => clearInterval(timer);
@@ -105,7 +109,7 @@ export async function reloadIfReachable(): Promise<boolean> {
       method: "HEAD",
       cache: "no-store",
       redirect: "manual",
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(8000),
     });
   } catch {
     return false;

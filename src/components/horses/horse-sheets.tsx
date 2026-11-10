@@ -26,6 +26,7 @@ const labelClass = "mb-2 block text-[13px] font-semibold tracking-wide text-ink-
 export function AddHorseButton() {
   const offline = useOffline();
   const overlay = useOverlayWrites();
+  const pending = usePendingWrites();
   const session = useSheetSession();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -81,7 +82,10 @@ export function AddHorseButton() {
       // A horse by this name is still on its way (not in the list yet): ask,
       // so a save that only looked like it hadn't worked doesn't add it twice,
       // while two horses that really share a name can still both be added.
-      const same = horsesOnTheirWay(overlay).find((h) => h.name.toLowerCase() === trimmed.toLowerCase());
+      const unsent = new Set(pending.filter((i) => i.name === "createHorse").map((i) => (i.meta as NewHorse).id));
+      const same = horsesOnTheirWay(overlay)
+        .filter((h) => unsent.has(h.id))
+        .find((h) => h.name.toLowerCase() === trimmed.toLowerCase());
       if (same && !window.confirm(`${same.name} is already being added (not synced yet). Add another horse called ${trimmed}?`)) return;
       draft.current = { id: crypto.randomUUID(), content };
     }

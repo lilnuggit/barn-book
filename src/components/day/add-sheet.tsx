@@ -9,8 +9,10 @@ import { Sheet } from "../sheet";
 import { toast } from "../toast";
 import { ToggleChip } from "../toggle-chip";
 import { cx } from "../ui";
+import { useDayOpen } from "./day-open-state";
 
 export function AddSheet({
+  draftKey,
   open,
   onClose,
   title,
@@ -19,6 +21,8 @@ export function AddSheet({
   horseIdsOnDay,
   onAdd,
 }: {
+  /** The day: the sheet's picks and note are kept per day. */
+  draftKey: string;
   open: boolean;
   onClose: () => void;
   title: string;
@@ -27,10 +31,13 @@ export function AddSheet({
   horseIdsOnDay: Set<string>;
   onAdd: (horseIds: string[], activityIds: string[], note: string, knownHorses: HorseLite[]) => void;
 }) {
-  const [horseIds, setHorseIds] = useState<string[]>([]);
-  const [activityIds, setActivityIds] = useState<string[]>([]);
-  const [note, setNote] = useState("");
-  const [created, setCreated] = useState<HorseLite[]>([]);
+  // Picks and note: shared by every copy of the day's screen (see day-open-state).
+  const [{ horseIds, activityIds, note, created }, updateOpen] = useDayOpen(draftKey);
+  const setHorseIds = (change: (ids: string[]) => string[]) => updateOpen((now) => ({ horseIds: change(now.horseIds) }));
+  const setActivityIds = (change: (ids: string[]) => string[]) =>
+    updateOpen((now) => ({ activityIds: change(now.activityIds) }));
+  const setNote = (value: string) => updateOpen(() => ({ note: value }));
+  const setCreated = (change: (list: HorseLite[]) => HorseLite[]) => updateOpen((now) => ({ created: change(now.created) }));
   const [newName, setNewName] = useState("");
   const [showNewHorse, setShowNewHorse] = useState(false);
   // Changes still on the phone, plus ones just confirmed that the page's list
@@ -71,9 +78,7 @@ export function AddSheet({
     onAdd(horseIds, activityIds, note.trim(), allHorses);
     const names = horseIds.map((id) => allHorses.find((h) => h.id === id)?.name).filter(Boolean);
     toast(names.length === 1 ? `Added ${names[0]}` : `Added ${names.length} horses`);
-    setHorseIds([]);
-    setActivityIds([]);
-    setNote("");
+    updateOpen(() => ({ horseIds: [], activityIds: [], note: "" }));
   }
 
   const count = horseIds.length;

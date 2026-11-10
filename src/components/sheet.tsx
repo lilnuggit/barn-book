@@ -41,7 +41,10 @@ export function Sheet({
   busy?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  /** What the parent wants. */
   const openRef = useRef(open);
+  /** The next close event is one the sheet caused itself (screen hidden), not the rider. */
+  const closingItself = useRef(false);
 
   useEffect(() => {
     openRef.current = open;
@@ -52,15 +55,19 @@ export function Sheet({
   }, [open]);
 
   // A modal <dialog> blocks the whole page. If this sheet's screen is hidden
-  // (Next keeps recent screens mounted but hidden) or removed while it's open,
-  // close it so it can't linger as an invisible layer that swallows every tap.
-  // That's not the rider closing it, so the parent isn't told (its draft is
-  // kept), and it opens again when the screen shows again, as effects re-run.
+  // (Next keeps recent screens mounted but hidden, and a screen can be hidden
+  // for a moment while it reloads) or removed while it's open, close it so it
+  // can't linger as an invisible layer that swallows every tap. That's not the
+  // rider closing it, so the parent isn't told (its draft is kept), and it
+  // opens again when the screen shows again (layout effects run again then).
   useLayoutEffect(() => {
     const dialog = ref.current;
+    if (dialog && openRef.current && !dialog.open) dialog.showModal();
     return () => {
-      openRef.current = false;
-      if (dialog?.open) dialog.close();
+      if (dialog?.open) {
+        closingItself.current = true;
+        dialog.close();
+      }
     };
   }, []);
 
@@ -78,8 +85,13 @@ export function Sheet({
       aria-label={title}
       onClose={() => {
         // Fired after every close, including ours; only report closes the
-        // parent doesn't know about yet (so it isn't told twice), and not one
-        // that's stale because the sheet has been opened again since.
+        // parent doesn't know about yet (so it isn't told twice), not the
+        // sheet's own when its screen was hidden, and not one that's stale
+        // because the sheet has been opened again since.
+        if (closingItself.current) {
+          closingItself.current = false;
+          return;
+        }
         if (openRef.current && !ref.current?.open) onClose();
       }}
       onCancel={(e) => {

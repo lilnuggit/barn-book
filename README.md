@@ -22,10 +22,12 @@ Losing signal at the barn is fine: every change (check-offs, notes, horses, type
 of work) is saved on the phone first and sent when there's a connection, in the
 order it was made, even if iOS closes the app in between. A strip above the tabs
 says when changes are still waiting. With no signal you can still switch tabs:
-Today always comes back with its list (the phone keeps a copy of the last one
-it loaded), other screens if you've looked at them since your last change was
+Today comes back with its list (the phone keeps a copy of each recent day, with
+your changes in it, and uses it when the signal is gone or the connection
+hangs), other screens if you've looked at them since your last change was
 saved; the rest fill in once the signal returns (if one can't, the app offers a
-reload). Other days need signal; the day arrows say so. An app left open
+reload). When the live list comes back, an open sheet, its picks and a note
+being typed carry on where they were. Other days need signal; the day arrows say so. An app left open
 overnight knows it's a new day and loads today's list as soon as it can. (The
 app does need signal to open from scratch.)
 

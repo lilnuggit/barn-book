@@ -33,9 +33,10 @@ import { HorseshoeMark } from "../icons";
 import { headerButtonClass } from "../page-header";
 import { toast } from "../toast";
 import { cx } from "../ui";
-import { saveDayCopy } from "@/lib/day-copy";
+import { applyDayChanges, saveDayCopy } from "@/lib/day-copy";
 import { busyEditing } from "@/lib/editing";
 import { AddSheet } from "./add-sheet";
+import { useDayOpen } from "./day-open-state";
 import { EntryCard } from "./entry-card";
 
 type Props = {
@@ -51,36 +52,6 @@ type Props = {
   activities: ActivityLite[];
   suggestions: CopySuggestion[];
 };
-
-/** Layers changes still waiting on the phone over what the server sent. */
-function applyPending(entries: DayEntry[], pending: OutboxItem[], date: string): DayEntry[] {
-  let out = entries;
-  for (const item of pending) {
-    const [first, second] = item.args as [unknown, unknown];
-    switch (item.name) {
-      case "addEntries": {
-        const added = ((item.meta as { entries?: DayEntry[] } | undefined)?.entries ?? []).filter(
-          (e) => e.date === date && !out.some((o) => o.id === e.id),
-        );
-        if (added.length) out = [...out, ...added];
-        break;
-      }
-      case "setEntryStatus":
-        out = out.map((e) => (e.id === first ? { ...e, status: second as EntryStatus } : e));
-        break;
-      case "saveEntryNote":
-        out = out.map((e) => (e.id === first ? { ...e, note: second as string } : e));
-        break;
-      case "setEntryActivities":
-        out = out.map((e) => (e.id === first ? { ...e, activityIds: second as string[] } : e));
-        break;
-      case "deleteEntry":
-        out = out.filter((e) => e.id !== first);
-        break;
-    }
-  }
-  return out;
-}
 
 /**
  * Entries with changes stuck on the phone: no signal, or they can't get
@@ -124,6 +95,7 @@ function usePhoneToday(serverToday: string) {
 
 const NO_SIGNAL_DAYS = "No signal — other days load once you’re back online";
 
+
 function report(result: SyncResult) {
   if (!result.ok && result.reason === "invalid") toast(result.error);
 }
@@ -140,10 +112,6 @@ export function DayView({
   suggestions,
 }: Props) {
   const router = useRouter();
-  // Keep what the server sent, to draw this day from with no signal later.
-  useEffect(() => {
-    if (savedAt === undefined) saveDayCopy({ date, today, locale, entries: serverEntries, horses, activities, suggestions });
-  }, [savedAt, date, today, locale, serverEntries, horses, activities, suggestions]);
   const pending = usePendingWrites();
   const overlay = useOverlayWrites();
   const offline = useOffline();
@@ -154,12 +122,16 @@ export function DayView({
   const newDay = now > today;
   // This list was "today" when it loaded and the phone is now on the next day.
   const staleToday = newDay && date === today;
+  // Waiting for her to finish (sheet open, typing) before loading the new day.
+  const [heldForEditing, setHeldForEditing] = useState(false);
   useEffect(() => {
-    if (!newDay) return;
+    if (!newDay || savedAt !== undefined) return;
     function moveOn() {
       // Not while she's in the middle of something: a new day's list would
       // replace this one, open sheet and all.
-      if (busyEditing()) return false;
+      const busy = busyEditing();
+      setHeldForEditing(busy);
+      if (busy) return false;
       if (staleToday && pinned) {
         // Opened as /?d=<that day>: reloading it would show the same day. Go to
         // today's list instead, once there's signal to load it (and unless the
@@ -172,21 +144,46 @@ export function DayView({
       }
       return true;
     }
-    if (moveOn()) return;
     const timer = setInterval(() => {
       if (moveOn()) clearInterval(timer);
     }, 2000);
-    return () => clearInterval(timer);
-  }, [newDay, staleToday, pinned, offline, router]);
+    const first = setTimeout(() => {
+      if (moveOn()) clearInterval(timer);
+    }, 0);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
+  }, [newDay, staleToday, pinned, offline, router, savedAt]);
   // Changes show instantly: each one is stored on the phone the moment it's
   // made, and the screen is drawn from the server's data plus those changes.
   // (Deliberately no transition per save: a pending one would hold up every
   // navigation, so with no signal the tabs and day arrows would stop working.)
-  const entries = useMemo(() => applyPending(serverEntries, overlay, date), [serverEntries, overlay, date]);
-  // Fresh page data includes everything the server confirmed before it arrived.
-  useEffect(() => forgetConfirmedBefore(Date.now()), [serverEntries]);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const entries = useMemo(() => applyDayChanges(serverEntries, overlay, date), [serverEntries, overlay, date]);
+  // Fresh page data includes everything the server confirmed before it arrived
+  // (not the copy kept on the phone, which may be older).
+  useEffect(() => {
+    if (savedAt === undefined) forgetConfirmedBefore(Date.now());
+  }, [serverEntries, savedAt]);
+  // Keep what she sees of this day (with her changes), to draw it from with no
+  // signal later. Horses added on the phone go along, for the add sheet.
+  const waitingHorses = useMemo(
+    () => overlay.filter((i) => i.name === "createHorse").map((i) => i.meta as HorseLite),
+    [overlay],
+  );
+  useEffect(() => {
+    if (savedAt !== undefined) return;
+    const known = [...horses, ...waitingHorses.filter((h) => h && !horses.some((x) => x.id === h.id))];
+    saveDayCopy({ date, today, locale, entries, horses: known, activities, suggestions });
+  }, [savedAt, date, today, locale, entries, horses, waitingHorses, activities, suggestions]);
+  // Open card and add sheet: shared by every copy of this day's screen (see day-open-state).
+  const [{ expandedId, sheetOpen, typingIn }, updateOpen] = useDayOpen(date);
+  function setExpandedId(next: string | null | ((id: string | null) => string | null)) {
+    updateOpen((now) => ({ expandedId: typeof next === "function" ? next(now.expandedId) : next }));
+  }
+  function setSheetOpen(open: boolean) {
+    updateOpen(() => ({ sheetOpen: open }));
+  }
 
   const activityById = useMemo(() => new Map(activities.map((a) => [a.id, a])), [activities]);
   const waiting = useMemo(() => waitingEntryIds(pending, offline || stuck), [pending, offline, stuck]);
@@ -231,13 +228,14 @@ export function DayView({
         done={done}
         total={entries.length}
         offline={offline}
-        newDay={staleToday}
+        newDay={staleToday && savedAt === undefined}
+        heldForEditing={heldForEditing}
       />
 
       <div className="mx-auto max-w-xl px-4 pt-4 pb-20">
         {savedAt !== undefined && (
           <p role="status" className="mb-3 rounded-xl bg-surface-2 px-3 py-2 text-[14px] text-ink-2">
-            No signal — this is the list as saved on this phone at{" "}
+            {offline ? "No signal" : "Still loading"} — this is the list as it was on this phone at{" "}
             {new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(savedAt)}. Your
             changes are kept and will sync.
           </p>
@@ -275,6 +273,10 @@ export function DayView({
                 onToggleExpanded={() => setExpandedId((id) => (id === entry.id ? null : entry.id))}
                 waiting={waiting.has(entry.id)}
                 noteSyncing={notesSyncing.has(entry.id)}
+                typing={typingIn === entry.id}
+                onTyping={(typing) =>
+                  updateOpen((now) => ({ typingIn: typing ? entry.id : now.typingIn === entry.id ? null : now.typingIn }))
+                }
                 onStatus={(status) => setStatus(entry, status)}
                 onNote={(note) => save(run("saveEntryNote", [entry.id, note], { key: `note:${entry.id}` }))}
                 onActivities={(activityIds) =>
@@ -307,6 +309,7 @@ export function DayView({
       )}
 
       <AddSheet
+        draftKey={date}
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
         title={`Add to ${relativeDayName(date, now, locale) === "Today" ? "today" : formatShort(date, locale)}`}
@@ -340,6 +343,7 @@ function DayHeader({
   total,
   offline,
   newDay,
+  heldForEditing,
 }: {
   date: string;
   /** The server's today, when the page loaded. */
@@ -352,6 +356,8 @@ function DayHeader({
   offline: boolean;
   /** This is the list the page loaded as today, and the phone has moved on to the next day. */
   newDay: boolean;
+  /** Today's list waits until she has finished what she has open. */
+  heldForEditing: boolean;
 }) {
   const router = useRouter();
   const offset = daysBetween(now, date);
@@ -424,7 +430,11 @@ function DayHeader({
         {newDay && (
           <p role="status" className="mt-2 rounded-xl bg-header-fill px-3 py-2 text-[14px] text-header-ink">
             It’s a new day.{" "}
-            {offline ? "Today’s list will load once you’re back online." : "Loading today’s list…"}
+            {offline
+              ? "Today’s list will load once you’re back online."
+              : heldForEditing
+                ? "Today’s list will load once you’ve finished here."
+                : "Loading today’s list…"}
           </p>
         )}
 

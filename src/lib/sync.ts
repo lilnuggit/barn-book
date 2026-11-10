@@ -20,6 +20,8 @@ import {
   updateHorse,
 } from "@/app/actions";
 import { toast } from "@/components/toast";
+import { clerk, currentUser, usesClerk } from "./account";
+import { patchDayCopies } from "./day-copy";
 import { busyEditing } from "./editing";
 import type { ActionResult, SyncResult } from "./action-result";
 
@@ -82,6 +84,14 @@ type RunOptions = {
   /** Keep on the phone until it succeeds (default). Only the page reload passes false. */
   persist?: boolean;
   /**
+   * A newer change with the same key takes the place in line of the one it
+   * replaces (default), since changes made since may depend on it (a day's
+   * line needs its horse). Pass false where the steps in between depend on
+   * the order they were made in instead (work-type names must stay unique at
+   * every step), so the newer change goes to the back of the line.
+   */
+  replaceInPlace?: boolean;
+  /**
    * Called once the change has been handed to the server, or once it's clear
    * it won't be right now. To change page because of a save, do it from here:
    * a page change started before the save is handed over would wait for the
@@ -95,26 +105,7 @@ const EMPTY: OutboxItem[] = [];
 
 // ---------- Clerk ----------
 
-type ClerkSession = { getToken(options?: { skipCache?: boolean }): Promise<string | null> };
-type ClerkGlobal = { loaded?: boolean; status?: string; session?: ClerkSession | null; user?: { id: string } | null };
 type Renewal = "renewed" | "signed-out" | "unknown";
-
-function clerk(): ClerkGlobal | undefined {
-  return typeof window === "undefined" ? undefined : (window as unknown as { Clerk?: ClerkGlobal }).Clerk;
-}
-
-/** The root layout marks <html data-auth="clerk"> unless running locally without sign-in. */
-function usesClerk() {
-  return typeof document !== "undefined" && document.documentElement.dataset.auth === "clerk";
-}
-
-/** The signed-in account: an id, null (no Clerk / signed out), or undefined (Clerk still loading). */
-export function currentUser(): string | null | undefined {
-  if (!usesClerk()) return null;
-  const c = clerk();
-  if (!c?.loaded) return undefined;
-  return c.user?.id ?? null;
-}
 
 /** Clerk has loaded and is sure nobody is signed in (not just unable to check). */
 function clerkSaysSignedOut() {
@@ -395,7 +386,7 @@ const transient = new Map<string, OutboxItem>();
 export function run<N extends ActionName>(
   name: N,
   args: Parameters<(typeof ACTIONS)[N]>,
-  { key, meta, persist = true, onSend }: RunOptions = {},
+  { key, meta, persist = true, onSend, replaceInPlace = true }: RunOptions = {},
 ): Promise<SyncResult> {
   const item: OutboxItem = {
     id: crypto.randomUUID(),
@@ -419,7 +410,7 @@ export function run<N extends ActionName>(
       for (const old of replaced) settle(old.id, { ok: false, reason: "replaced" });
       // Take the place of the change it replaces, not the back of the line:
       // changes made since may depend on it (a day's line needs its horse).
-      if (replaced.length) at = next.indexOf(replaced[0]!);
+      if (replaced.length && replaceInPlace) at = next.indexOf(replaced[0]!);
       next = next.filter((i) => !replaced.includes(i));
     }
     next.splice(at, 0, item);
@@ -461,20 +452,51 @@ export function refreshWhenPossible() {
   sendRefresh();
 }
 
+function retryRefresh(ms: number) {
+  refreshWait = setTimeout(() => {
+    refreshWait = undefined;
+    sendRefresh();
+  }, ms);
+}
+
+/** The server answers at all (a quick check, so nothing is left for Next to hold). */
+async function reachable() {
+  try {
+    await fetch(window.location.href, {
+      method: "HEAD",
+      cache: "no-store",
+      redirect: "manual",
+      signal: AbortSignal.timeout(3000),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sendRefresh() {
   if (!refreshWanted || refreshing || refreshWait) return;
-  // Not with no signal (Next would hold it and apply it the moment the signal
-  // returns, whatever is open), nor under an open sheet: the reload can bring
-  // a new day's list that replaces it. Try again shortly.
-  if (knownOffline || busyEditing()) {
-    if (!knownOffline)
-      refreshWait = setTimeout(() => {
-        refreshWait = undefined;
-        sendRefresh();
-      }, 2000);
+  // Not with no signal, nor under an open sheet: the reload can bring a new
+  // day's list that replaces it. And only once the server answers, since
+  // Next holds a reload it can't send and applies it the moment the signal
+  // returns, whatever is open by then. Try again shortly.
+  if (knownOffline) return; // setKnownOffline(false) tries again
+  if (busyEditing()) {
+    retryRefresh(2000);
     return;
   }
   refreshing = true;
+  void reachable().then((ok) => {
+    if (!ok || knownOffline || busyEditing()) {
+      refreshing = false;
+      if (!knownOffline) retryRefresh(ok ? 2000 : 5000);
+      return;
+    }
+    sendRefreshNow();
+  });
+}
+
+function sendRefreshNow() {
   void run("refreshPage", [], { persist: false }).then((result) => {
     refreshing = false;
     if (result.ok) refreshWanted = false;
@@ -630,6 +652,7 @@ async function process(id: string): Promise<void> {
     } else {
       commit(stored().filter((i) => i.id !== id));
       setStuck(false); // the server answered
+      if (result.ok) patchDayCopies(item); // the copies kept for offline use catch up
       // Made before the app was closed or reloaded, so no screen is waiting to
       // say it was refused: say it here.
       if (!result.ok && result.reason === "invalid" && !waiters.has(id)) toast(`${describe(item)}: ${result.error}`);

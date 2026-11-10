@@ -17,6 +17,8 @@ export function EntryCard({
   expanded,
   waiting,
   noteSyncing,
+  typing,
+  onTyping,
   onToggleExpanded,
   onStatus,
   onNote,
@@ -31,6 +33,9 @@ export function EntryCard({
   waiting: boolean;
   /** A note for this entry is still waiting on the phone. */
   noteSyncing: boolean;
+  /** She's typing this entry's note (also on another copy of this screen). */
+  typing: boolean;
+  onTyping: (typing: boolean) => void;
   onToggleExpanded: () => void;
   onStatus: (status: EntryStatus) => void;
   onNote: (note: string) => Promise<SyncResult>;
@@ -95,7 +100,14 @@ export function EntryCard({
 
       {expanded && (
         <div className="space-y-4 border-t border-line px-4 pt-3 pb-4">
-          <NoteField initial={entry.note} syncing={noteSyncing} stuck={waiting} onSave={onNote} />
+          <NoteField
+            initial={entry.note}
+            syncing={noteSyncing}
+            stuck={waiting}
+            typing={typing}
+            onTyping={onTyping}
+            onSave={onNote}
+          />
 
           <WorkEditor entry={entry} activities={activities} onActivities={onActivities} />
 
@@ -233,6 +245,8 @@ function NoteField({
   initial,
   syncing,
   stuck,
+  typing: typingHere,
+  onTyping,
   onSave,
 }: {
   initial: string;
@@ -240,12 +254,24 @@ function NoteField({
   syncing: boolean;
   /** Changes can't go out right now (no signal, or an earlier one failed). */
   stuck: boolean;
+  /** She was typing here (on this or another copy of the screen): carry on. */
+  typing: boolean;
+  onTyping: (typing: boolean) => void;
   onSave: (note: string) => Promise<SyncResult>;
 }) {
   const id = useId();
   const offline = useOffline();
   const [value, setValue] = useState(initial);
   const [sent, setSent] = useState(false);
+  // Typed here and not handed to the phone's queue yet.
+  const [typing, setTyping] = useState(false);
+  const [shownInitial, setShownInitial] = useState(initial);
+  if (initial !== shownInitial) {
+    // The note changed somewhere else (another copy of this screen, the
+    // server): show that, unless she has typing of her own not yet saved.
+    setShownInitial(initial);
+    if (!typing) setValue(initial);
+  }
   const ref = useRef<HTMLTextAreaElement>(null);
   const lastSent = useRef(initial);
   const latest = useRef(value);
@@ -264,6 +290,7 @@ function NoteField({
 
   function flush() {
     clearTimeout(timer.current);
+    setTyping(false);
     const next = latest.current;
     if (next.trim() === lastSent.current.trim()) return;
     lastSent.current = next;
@@ -271,9 +298,31 @@ function NoteField({
     void onSaveRef.current(next);
   }
 
+  // Shown text taken over from elsewhere counts as already saved.
+  useEffect(() => {
+    if (latest.current === initial) lastSent.current = initial;
+  }, [initial]);
+
+  // This screen replaced another copy of itself while she was typing here:
+  // keep the keyboard up, with the cursor at the end.
+  useEffect(() => {
+    const el = ref.current;
+    if (!typingHere || !el || document.activeElement === el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+    // Only when it first appears.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onTypingRef = useRef(onTyping);
+  useLayoutEffect(() => {
+    onTypingRef.current = onTyping;
+  });
   useEffect(() => {
     const onHide = () => {
-      if (document.visibilityState === "hidden") flush();
+      if (document.visibilityState !== "hidden") return;
+      flush();
+      onTypingRef.current(false); // the keyboard goes when the app does
     };
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("pagehide", flush);
@@ -314,11 +363,21 @@ function NoteField({
         placeholder="How did it go? What did you work on?"
         onChange={(e) => {
           setValue(e.target.value);
+          setTyping(true);
           setSent(false); // new text isn't saved yet: no "Saved" until it is
           clearTimeout(timer.current);
           timer.current = setTimeout(flush, 900);
         }}
-        onBlur={flush}
+        onFocus={() => onTyping(true)}
+        onBlur={() => {
+          flush();
+          // Unless the same note has the keyboard again at once (another copy
+          // of this screen took over).
+          const el = ref.current;
+          setTimeout(() => {
+            if (document.activeElement?.tagName !== "TEXTAREA" || document.activeElement === el) onTyping(false);
+          }, 0);
+        }}
         className="block w-full resize-none rounded-xl bg-surface-2 px-3.5 py-2.5 leading-snug text-ink placeholder:text-ink-3 focus:bg-surface focus:ring-2 focus:ring-brand/50 focus:outline-none"
       />
     </div>
