@@ -130,6 +130,11 @@ summary {
   outline-offset: 2px;
 }
 
+/* Focused by the app (an open sheet, a title after its content changed), not picked by the rider: no ring. */
+[tabindex="-1"]:focus {
+  outline: none;
+}
+
 /* ---------- bottom sheet ---------- */
 dialog.sheet {
   margin: auto auto 0;

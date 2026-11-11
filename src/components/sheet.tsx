@@ -60,7 +60,13 @@ export function Sheet({
     openRef.current = open;
     const dialog = ref.current;
     if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
+    if (open && !dialog.open) {
+      dialog.showModal();
+      // The sheet itself, not its first button: VoiceOver reads its name, and
+      // Safari doesn't ring the button as if picked with a keyboard. (A field
+      // that should have the keyboard takes it in the parent's effect, next.)
+      dialog.focus({ preventScroll: true });
+    }
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
@@ -90,6 +96,7 @@ export function Sheet({
   return (
     <dialog
       ref={ref}
+      tabIndex={-1}
       className="sheet shadow-2xl"
       aria-label={title}
       onClose={() => {
@@ -155,7 +162,9 @@ export function Sheet({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-4">{children}</div>
+      {/* Sized from its content (flex-basis auto): Safari collapses a 0% basis to nothing here, the sheet's
+          height being its content's. It shrinks and scrolls once the sheet reaches its full height. */}
+      <div className="min-h-0 flex-auto overflow-y-auto overscroll-contain px-5 pb-4">{children}</div>
       {footer ? (
         <div className="border-t border-line bg-surface px-5 pt-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
           {footer}
