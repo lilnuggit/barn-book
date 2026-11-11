@@ -190,6 +190,7 @@ function CheckButton({ status, name, onClick }: { status: EntryStatus; name: str
       onClick={onClick}
       aria-pressed={done}
       aria-label={done ? `${name}: done. Tap to undo` : `Mark ${name} done`}
+      data-check
       className="grid size-[52px] shrink-0 place-items-center"
     >
       <span

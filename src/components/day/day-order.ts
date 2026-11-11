@@ -26,9 +26,9 @@ const SLIDE_MS = 280;
 const settling = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
 /**
- * A card that has just moved takes no taps until it has settled in its new
- * place (with or without the slide): the second tap of a quick double tap on
- * a horse's circle mustn't check off the next horse, just slid under her finger.
+ * A card moved by a check-off takes no taps while it slides to its new place
+ * (or for as long, with no slide): the second tap of a quick double tap on a
+ * horse's circle mustn't check off the next horse, just slid under her finger.
  */
 function settle(el: HTMLElement) {
   clearTimeout(settling.get(el));
@@ -38,27 +38,29 @@ function settle(el: HTMLElement) {
     setTimeout(() => {
       settling.delete(el);
       el.style.pointerEvents = "";
-    }, SLIDE_MS + 70),
+    }, SLIDE_MS),
   );
 }
 
 /**
  * Slides cards to their new places when she changes the order (a horse going
  * down after it's checked off, or back up when it's unchecked), so it's clear
- * where it went. Returns the list's ref and `before`: call `before(id)` in the handler, just before the change: it
- * notes where every card is on screen right then (mid-slide included), and the
- * card she tapped (`id`) is kept under her finger. Changes that don't come
- * from her (data from the server) don't slide.
+ * where it went. Returns the list's ref and `before`: call `before(id, guard)`
+ * in the handler, just before the change: it notes where every card is on
+ * screen right then (mid-slide included), and the card she tapped (`id`) is
+ * kept under her finger. With `guard` (a check-off), the cards that move take
+ * no taps until they're in place (see settle). Changes that don't come from
+ * her (data from the server) don't slide.
  */
 export function useCardMoves() {
   const list = useRef<HTMLUListElement>(null);
-  const snapshot = useRef<{ tops: Map<string, number>; anchor: string | null } | null>(null);
-  const before = useCallback((anchor: string | null = null) => {
+  const snapshot = useRef<{ tops: Map<string, number>; anchor: string | null; guard: boolean } | null>(null);
+  const before = useCallback((anchor: string | null = null, guard = false) => {
     const ul = list.current;
     if (!ul) return;
     const tops = new Map<string, number>();
     for (const el of cardsOf(ul)) tops.set(el.dataset.entry ?? "", el.getBoundingClientRect().top);
-    snapshot.current = { tops, anchor };
+    snapshot.current = { tops, anchor, guard };
   }, []);
   useLayoutEffect(() => {
     const snap = snapshot.current;
@@ -74,14 +76,14 @@ export function useCardMoves() {
       const shift = anchor.getBoundingClientRect().top - from;
       if (Math.abs(shift) >= 1) window.scrollBy(0, shift);
     }
-    // With reduced motion the cards jump to their places instead of sliding (and still take no taps for a moment).
+    // With reduced motion the cards jump to their places instead of sliding (still guarded for as long).
     const noSlide = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     for (const el of cards) {
       const was = snap.tops.get(el.dataset.entry ?? "");
       if (was === undefined) continue;
       const delta = was - el.getBoundingClientRect().top;
       if (Math.abs(delta) < 1) continue;
-      settle(el);
+      if (snap.guard) settle(el);
       if (noSlide) continue;
       el.animate?.([{ transform: `translateY(${delta}px)` }, { transform: "none" }], {
         duration: SLIDE_MS,

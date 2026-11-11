@@ -332,6 +332,21 @@ export function DayView({
   // Still to do first; done and skipped at the bottom, the latest last.
   const shown = useMemo(() => orderForToday(entries), [entries]);
   const [listRef, beforeMove] = useCardMoves();
+  // A horse moved by a check-off with the focus in its card (the keyboard,
+  // VoiceOver) takes the focus away with it, or loses it as its card closes:
+  // carry on from the horse now in its place, as on the Visits screen. Not if
+  // she has gone on to something else meanwhile.
+  const refocus = useRef<{ id: string; at: number } | null>(null);
+  useLayoutEffect(() => {
+    const was = refocus.current;
+    if (!was) return;
+    refocus.current = null;
+    const now = document.activeElement;
+    if (now && now !== document.body && now.closest("[data-entry]")?.getAttribute("data-entry") !== was.id) return;
+    const cards = listRef.current?.querySelectorAll<HTMLElement>(":scope > [data-entry]");
+    if (!cards?.length) return;
+    cards[Math.min(was.at, cards.length - 1)].querySelector<HTMLElement>("button[data-check]")?.focus({ preventScroll: true });
+  });
 
   function save(result: Promise<SyncResult>): Promise<SyncResult> {
     void result.then(report);
@@ -341,14 +356,19 @@ export function DayView({
   function setStatus(entry: DayEntry, status: EntryStatus) {
     // Checked off or skipped, a horse goes straight down to the bottom (and
     // back up when it's put back to do). The list itself stays put, so the
-    // next horse is now where she tapped; the cards slide to their places.
-    beforeMove();
+    // next horse is now where she tapped; the cards slide to their places and
+    // take no taps until they're there. Switching between done and skipped
+    // doesn't move it, unless it was finished before finish times were kept:
+    // it then goes below the others, its card staying under her finger.
+    const moves = (entry.status === "planned") !== (status === "planned");
+    beforeMove(moves ? null : entry.id, moves);
+    if (moves && document.activeElement?.closest("[data-entry]")?.getAttribute("data-entry") === entry.id) {
+      refocus.current = { id: entry.id, at: shown.findIndex((e) => e.id === entry.id) };
+    }
     save(run("setEntryStatus", [entry.id, status, finishTime(entry, status, entries)], { key: `status:${entry.id}` }));
     // Its card closes if it was open (she wrote the note first): the note is
-    // saved as it closes. Switching between done and skipped doesn't move it.
-    if ((entry.status === "planned") !== (status === "planned")) {
-      updateOpen((now) => (now.expandedId === entry.id ? { expandedId: null } : {}));
-    }
+    // saved as it closes.
+    if (moves) updateOpen((now) => (now.expandedId === entry.id ? { expandedId: null } : {}));
   }
 
   function addToDay(horseIds: string[], activityIds: string[], note: string, knownHorses: HorseLite[]) {
