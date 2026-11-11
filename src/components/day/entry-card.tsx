@@ -7,6 +7,7 @@ import type { SyncResult } from "@/lib/action-result";
 import type { ActivityLite, DayEntry } from "@/lib/data";
 import { colorClass } from "@/lib/palette";
 import { useNoSignal } from "@/lib/sync";
+import { fitToText } from "../fit-to-text";
 import { ToggleChip } from "../toggle-chip";
 import { ActivityChip, cx } from "../ui";
 
@@ -309,11 +310,7 @@ function NoteField({
   useLayoutEffect(() => {
     latest.current = value;
     onSaveRef.current = onSave;
-    const el = ref.current;
-    if (el) {
-      el.style.height = "auto";
-      el.style.height = `${el.scrollHeight + 2}px`;
-    }
+    if (ref.current) fitToText(ref.current);
   });
 
   function flush() {

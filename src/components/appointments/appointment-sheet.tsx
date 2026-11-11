@@ -17,6 +17,7 @@ import {
 import type { HorseLite } from "@/lib/data";
 import { addDays, dayHeading, isISODate } from "@/lib/dates";
 import { colorClass } from "@/lib/palette";
+import { fitToText } from "../fit-to-text";
 import { Sheet } from "../sheet";
 import { ToggleChip } from "../toggle-chip";
 import { cx } from "../ui";
@@ -85,8 +86,7 @@ export function AppointmentSheet({
   useLayoutEffect(() => {
     const el = noteRef.current;
     if (!el || !s.open) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + 2}px`;
+    fitToText(el);
   }, [s.note, s.open]);
   // This screen took over from another copy of itself while she was typing
   // the note: put the keyboard back there, with the cursor at the end.
