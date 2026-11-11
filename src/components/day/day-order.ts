@@ -6,12 +6,11 @@ import type { DayEntry } from "@/lib/data";
 /**
  * The day's list as shown: horses still to do first, in the list's order;
  * then the ones done or skipped, in the order they were finished (the latest
- * at the bottom). A horse just checked off whose card is still open (`held`)
- * stays in its place until the card closes, so the note box doesn't jump away.
+ * at the bottom). A horse goes down as soon as it's checked off.
  */
-export function orderForToday(entries: DayEntry[], held: string | null): DayEntry[] {
-  const toDo = entries.filter((e) => e.status === "planned" || e.id === held);
-  const finished = entries.filter((e) => e.status !== "planned" && e.id !== held);
+export function orderForToday(entries: DayEntry[]): DayEntry[] {
+  const toDo = entries.filter((e) => e.status === "planned");
+  const finished = entries.filter((e) => e.status !== "planned");
   // Stable: horses finished at the same moment (or before times were kept) stay in list order.
   finished.sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0));
   return [...toDo, ...finished];
@@ -19,6 +18,28 @@ export function orderForToday(entries: DayEntry[], held: string | null): DayEntr
 
 function cardsOf(ul: HTMLUListElement): HTMLElement[] {
   return [...ul.querySelectorAll<HTMLElement>(":scope > [data-entry]")];
+}
+
+const SLIDE_MS = 280;
+
+/** Cards that have just moved, and the timer that lets each take taps again. */
+const settling = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
+
+/**
+ * A card that has just moved takes no taps until it has settled in its new
+ * place (with or without the slide): the second tap of a quick double tap on
+ * a horse's circle mustn't check off the next horse, just slid under her finger.
+ */
+function settle(el: HTMLElement) {
+  clearTimeout(settling.get(el));
+  el.style.pointerEvents = "none";
+  settling.set(
+    el,
+    setTimeout(() => {
+      settling.delete(el);
+      el.style.pointerEvents = "";
+    }, SLIDE_MS + 70),
+  );
 }
 
 /**
@@ -53,14 +74,17 @@ export function useCardMoves() {
       const shift = anchor.getBoundingClientRect().top - from;
       if (Math.abs(shift) >= 1) window.scrollBy(0, shift);
     }
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    // With reduced motion the cards jump to their places instead of sliding (and still take no taps for a moment).
+    const noSlide = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     for (const el of cards) {
       const was = snap.tops.get(el.dataset.entry ?? "");
       if (was === undefined) continue;
       const delta = was - el.getBoundingClientRect().top;
       if (Math.abs(delta) < 1) continue;
+      settle(el);
+      if (noSlide) continue;
       el.animate?.([{ transform: `translateY(${delta}px)` }, { transform: "none" }], {
-        duration: 280,
+        duration: SLIDE_MS,
         easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
       });
     }

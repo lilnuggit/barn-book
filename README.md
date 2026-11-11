@@ -6,9 +6,9 @@ Each day you build a list of horses and what they're doing (hack, GW, dressage,
 trot sets, lessons, XC…). As the day goes on you check them off and jot a quick
 note. Nothing gets deleted, so you can look back at what any horse did and when.
 
-- **Today**: the day's checklist. Tap the circle to check a horse off; the card
-  opens so you can add a note, and when you close it (or check the next horse)
-  the horse moves to the bottom, so the ones still to do stay at the top. Mark a
+- **Today**: the day's checklist. Tap the circle to check a horse off and it
+  moves straight to the bottom, so the ones still to do stay at the top. Tap a
+  horse to open its card and add a note (before or after checking it off). Mark a
   horse skipped (lost a shoe, etc.), change the work, or remove it. ‹ › move
   between days, so you can plan tomorrow tonight. An empty day offers to repeat
   yesterday's list or the same day last week.

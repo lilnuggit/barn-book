@@ -130,7 +130,7 @@ export function DayView({
   // anything reads them.
   useDayScreen(date);
   useAppointmentScreen(`day:${date}`);
-  const [{ expandedId, sheetOpen, typingIn, held }, updateOpen] = useDayUi(date);
+  const [{ expandedId, sheetOpen, typingIn }, updateOpen] = useDayUi(date);
   const router = useRouter();
   const pending = usePendingWrites();
   const overlay = useOverlayWrites();
@@ -305,12 +305,7 @@ export function DayView({
     covered,
   ]);
   function setExpandedId(next: string | null | ((id: string | null) => string | null)) {
-    updateOpen((now) => {
-      const id = typeof next === "function" ? next(now.expandedId) : next;
-      // Closing the card of a horse just checked off (or opening another)
-      // lets it go down with the others that are finished.
-      return { expandedId: id, held: now.held === id ? now.held : null };
-    });
+    updateOpen((now) => ({ expandedId: typeof next === "function" ? next(now.expandedId) : next }));
   }
   function setSheetOpen(open: boolean) {
     updateOpen(() => ({ sheetOpen: open }));
@@ -335,7 +330,7 @@ export function DayView({
   const copying = overlay.some((i) => i.name === "copyDay" && i.args[1] === date && !addedLines(i));
   const done = entries.filter((e) => e.status === "done").length;
   // Still to do first; done and skipped at the bottom, the latest last.
-  const shown = useMemo(() => orderForToday(entries, held), [entries, held]);
+  const shown = useMemo(() => orderForToday(entries), [entries]);
   const [listRef, beforeMove] = useCardMoves();
 
   function save(result: Promise<SyncResult>): Promise<SyncResult> {
@@ -344,16 +339,16 @@ export function DayView({
   }
 
   function setStatus(entry: DayEntry, status: EntryStatus) {
-    // A check-off keeps the card she tapped under her finger; unchecking lets it go back up.
-    beforeMove(status === "planned" ? null : entry.id);
+    // Checked off or skipped, a horse goes straight down to the bottom (and
+    // back up when it's put back to do). The list itself stays put, so the
+    // next horse is now where she tapped; the cards slide to their places.
+    beforeMove();
     save(run("setEntryStatus", [entry.id, status, finishTime(entry, status, entries)], { key: `status:${entry.id}` }));
-    // Open the card after a check-off so the note box is right there. A horse
-    // just finished (it was still to do) stays in its place while its card is
-    // open, and goes down once it's closed or the next one is checked. One
-    // only switching between done and skipped is already in its place below.
-    const hold = entry.status === "planned" || held === entry.id ? entry.id : null;
-    if (status === "done") updateOpen(() => ({ expandedId: entry.id, held: hold }));
-    else if (status === "skipped" && hold) updateOpen((now) => (now.expandedId === entry.id ? { held: hold } : {}));
+    // Its card closes if it was open (she wrote the note first): the note is
+    // saved as it closes. Switching between done and skipped doesn't move it.
+    if ((entry.status === "planned") !== (status === "planned")) {
+      updateOpen((now) => (now.expandedId === entry.id ? { expandedId: null } : {}));
+    }
   }
 
   function addToDay(horseIds: string[], activityIds: string[], note: string, knownHorses: HorseLite[]) {
@@ -448,8 +443,8 @@ export function DayView({
                 activityById={activityById}
                 expanded={expandedId === entry.id}
                 onToggleExpanded={() => {
-                  // Opening a card keeps it under her finger; closing one lets a horse just finished go down.
-                  beforeMove(expandedId === entry.id ? null : entry.id);
+                  // The card she tapped stays under her finger (another closing above it would pull it up).
+                  beforeMove(entry.id);
                   setExpandedId((id) => (id === entry.id ? null : entry.id));
                 }}
                 waiting={waiting.has(entry.id)}
