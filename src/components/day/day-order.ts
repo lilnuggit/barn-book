@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, type RefObject } from "react";
 import type { DayEntry } from "@/lib/data";
 
 /**
@@ -29,6 +29,7 @@ const settling = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
  * A card moved by a check-off takes no taps while it slides to its new place
  * (or for as long, with no slide): the second tap of a quick double tap on a
  * horse's circle mustn't check off the next horse, just slid under her finger.
+ * (Also used for the whole page, when the page itself moved.)
  */
 function settle(el: HTMLElement) {
   clearTimeout(settling.get(el));
@@ -45,23 +46,28 @@ function settle(el: HTMLElement) {
 /**
  * Slides cards to their new places when she changes the order (a horse going
  * down after it's checked off, or back up when it's unchecked), so it's clear
- * where it went. Returns the list's ref and `before`: call `before(id, guard)`
+ * where it went. Give it the list's ref; it returns `before`: call `before(id, guard)`
  * in the handler, just before the change: it notes where every card is on
  * screen right then (mid-slide included), and the card she tapped (`id`) is
  * kept under her finger. With `guard` (a check-off), the cards that move take
  * no taps until they're in place (see settle). Changes that don't come from
  * her (data from the server) don't slide.
  */
-export function useCardMoves() {
-  const list = useRef<HTMLUListElement>(null);
-  const snapshot = useRef<{ tops: Map<string, number>; anchor: string | null; guard: boolean } | null>(null);
-  const before = useCallback((anchor: string | null = null, guard = false) => {
+export function useCardMoves(list: RefObject<HTMLUListElement | null>) {
+  const snapshot = useRef<{
+    tops: Map<string, number>;
+    anchor: string | null;
+    guard: boolean;
+    scrollY: number;
+  } | null>(null);
+  // Called from her taps (event handlers) only.
+  function before(anchor: string | null = null, guard = false) {
     const ul = list.current;
     if (!ul) return;
     const tops = new Map<string, number>();
     for (const el of cardsOf(ul)) tops.set(el.dataset.entry ?? "", el.getBoundingClientRect().top);
-    snapshot.current = { tops, anchor, guard };
-  }, []);
+    snapshot.current = { tops, anchor, guard, scrollY: window.scrollY };
+  }
   useLayoutEffect(() => {
     const snap = snapshot.current;
     snapshot.current = null;
@@ -70,6 +76,10 @@ export function useCardMoves() {
     const cards = cardsOf(ul);
     // Slides still running would skew where the cards now are.
     for (const el of cards) for (const a of el.getAnimations?.() ?? []) a.cancel();
+    // The page got shorter (a card closing near its end) and the browser pulled
+    // it back: everything on it moved under her finger, not only the cards. For
+    // a check-off, nothing on the page takes taps until the cards are in place.
+    if (snap.guard && Math.abs(window.scrollY - snap.scrollY) >= 1) settle(document.documentElement);
     const anchor = cards.find((el) => el.dataset.entry === snap.anchor);
     const from = anchor ? snap.tops.get(anchor.dataset.entry ?? "") : undefined;
     if (anchor && from !== undefined) {
@@ -91,5 +101,5 @@ export function useCardMoves() {
       });
     }
   });
-  return [list, before] as const;
+  return before;
 }

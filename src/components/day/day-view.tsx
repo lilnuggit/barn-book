@@ -109,6 +109,15 @@ function report(result: SyncResult) {
   if (!result.ok && result.reason === "invalid") toast(result.error);
 }
 
+/** The element's focus ring shows: it was reached with the keyboard, not tapped. */
+function ringShown(el: Element): boolean {
+  try {
+    return el.matches(":focus-visible");
+  } catch {
+    return false; // a browser that doesn't know :focus-visible
+  }
+}
+
 export function DayView({
   date,
   today,
@@ -331,12 +340,15 @@ export function DayView({
   const done = entries.filter((e) => e.status === "done").length;
   // Still to do first; done and skipped at the bottom, the latest last.
   const shown = useMemo(() => orderForToday(entries), [entries]);
-  const [listRef, beforeMove] = useCardMoves();
   // A horse moved by a check-off with the focus in its card (the keyboard,
   // VoiceOver) takes the focus away with it, or loses it as its card closes:
   // carry on from the horse now in its place, as on the Visits screen. Not if
-  // she has gone on to something else meanwhile.
-  const refocus = useRef<{ id: string; at: number } | null>(null);
+  // she has gone on to something else meanwhile. With the keyboard (its focus
+  // ring showing) the page follows the focus if it's off screen; otherwise
+  // the page stays put. (Before useCardMoves, so this runs first: its slides
+  // start from where the cards are, and the page must have followed by then.)
+  const listRef = useRef<HTMLUListElement>(null);
+  const refocus = useRef<{ id: string; at: number; ring: boolean } | null>(null);
   useLayoutEffect(() => {
     const was = refocus.current;
     if (!was) return;
@@ -345,8 +357,11 @@ export function DayView({
     if (now && now !== document.body && now.closest("[data-entry]")?.getAttribute("data-entry") !== was.id) return;
     const cards = listRef.current?.querySelectorAll<HTMLElement>(":scope > [data-entry]");
     if (!cards?.length) return;
-    cards[Math.min(was.at, cards.length - 1)].querySelector<HTMLElement>("button[data-check]")?.focus({ preventScroll: true });
+    cards[Math.min(was.at, cards.length - 1)]
+      .querySelector<HTMLElement>("button[data-check]")
+      ?.focus({ preventScroll: !was.ring });
   });
+  const beforeMove = useCardMoves(listRef);
 
   function save(result: Promise<SyncResult>): Promise<SyncResult> {
     void result.then(report);
@@ -361,9 +376,10 @@ export function DayView({
     // doesn't move it, unless it was finished before finish times were kept:
     // it then goes below the others, its card staying under her finger.
     const moves = (entry.status === "planned") !== (status === "planned");
-    beforeMove(moves ? null : entry.id, moves);
-    if (moves && document.activeElement?.closest("[data-entry]")?.getAttribute("data-entry") === entry.id) {
-      refocus.current = { id: entry.id, at: shown.findIndex((e) => e.id === entry.id) };
+    beforeMove(moves ? null : entry.id, true);
+    const focused = document.activeElement;
+    if (moves && focused?.closest("[data-entry]")?.getAttribute("data-entry") === entry.id) {
+      refocus.current = { id: entry.id, at: shown.findIndex((e) => e.id === entry.id), ring: ringShown(focused) };
     }
     save(run("setEntryStatus", [entry.id, status, finishTime(entry, status, entries)], { key: `status:${entry.id}` }));
     // Its card closes if it was open (she wrote the note first): the note is
