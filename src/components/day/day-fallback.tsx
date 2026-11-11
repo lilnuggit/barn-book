@@ -60,6 +60,10 @@ export function DayFallback() {
       horses={day.horses}
       activities={day.activities}
       suggestions={day.suggestions}
+      appointments={day.appointments}
+      appointmentTypes={day.appointmentTypes}
+      appointmentsAround={day.appointmentsAround}
+      aroundPairs={day.aroundPairs}
     />
   );
 }

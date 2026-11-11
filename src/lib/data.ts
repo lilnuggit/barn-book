@@ -1,9 +1,19 @@
 import "server-only";
-import { and, asc, count, desc, eq, gte, inArray, isNull, lt, lte, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, lte, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
-import { activityTypes, entries, horses, type EntryStatus } from "@/db/schema";
+import {
+  activityTypes,
+  appointmentHorses,
+  appointments,
+  appointmentTypes,
+  entries,
+  horses,
+  type EntryStatus,
+} from "@/db/schema";
+import type { AppointmentLite, AppointmentTypeLite } from "./appointments";
 import { addDays, lastDayOfMonth } from "./dates";
-import { DEFAULT_ACTIVITIES } from "./palette";
+import { DEFAULT_ACTIVITIES, DEFAULT_APPOINTMENT_TYPES } from "./palette";
 import { likePattern } from "./validate";
 
 export type ActivityLite = { id: string; name: string; color: string; archived: boolean };
@@ -348,4 +358,211 @@ export async function getHorsesForExport(userId: string) {
     .from(horses)
     .where(eq(horses.userId, userId))
     .orderBy(sql`lower(${horses.name})`);
+}
+
+// ---------- visits (appointments) ----------
+
+/** Checked-off visits older than this are left out of the book, except each horse's latest two of each type. */
+const DONE_DAYS = 365;
+
+/** The same id for a starting type on every first load, so two first loads at once can't add the list twice. */
+function startingTypeId(userId: string, name: string) {
+  const h = createHash("md5").update(`${userId}:appointment-type:${name}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+const selectAppointmentTypes = (userId: string) =>
+  db
+    .select()
+    .from(appointmentTypes)
+    .where(eq(appointmentTypes.userId, userId))
+    .orderBy(asc(appointmentTypes.sortOrder), asc(appointmentTypes.name));
+
+/** Types of visit in Settings order, archived ones included. The starting list is added on the first read. */
+export async function getAppointmentTypes(userId: string): Promise<AppointmentTypeLite[]> {
+  let rows = await selectAppointmentTypes(userId);
+  if (rows.length === 0) {
+    await db
+      .insert(appointmentTypes)
+      .values(
+        DEFAULT_APPOINTMENT_TYPES.map((t, i) => ({
+          id: startingTypeId(userId, t.name),
+          userId,
+          name: t.name,
+          color: t.color,
+          intervalCount: t.every?.count ?? null,
+          intervalUnit: t.every?.unit ?? null,
+          sortOrder: i,
+        })),
+      )
+      .onConflictDoNothing();
+    rows = await selectAppointmentTypes(userId);
+  }
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    color: r.color,
+    archived: r.archivedAt !== null,
+    every:
+      r.intervalCount !== null && r.intervalUnit !== null ? { count: r.intervalCount, unit: r.intervalUnit } : null,
+  }));
+}
+
+async function selectAppointments(userId: string, where: SQL): Promise<AppointmentLite[]> {
+  const { rows } = await db.execute<{
+    id: string;
+    type_id: string;
+    date: string;
+    time: string | null;
+    note: string;
+    done: boolean;
+    horses: HorseLite[];
+  }>(sql`
+    SELECT a.id, a.type_id, a.date::text AS date, a.time, a.note, a.done,
+      json_agg(json_build_object('id', h.id, 'name', h.name, 'color', h.color) ORDER BY lower(h.name), h.id) AS horses
+    FROM ${appointments} a
+    JOIN ${appointmentTypes} t ON t.id = a.type_id
+    JOIN ${appointmentHorses} ah ON ah.appointment_id = a.id
+    JOIN ${horses} h ON h.id = ah.horse_id
+    WHERE a.user_id = ${userId} AND (${where})
+    GROUP BY a.id, t.sort_order
+    ORDER BY a.date, a.time ASC NULLS FIRST, t.sort_order, a.created_at
+  `);
+  return rows.map((r) => ({
+    id: r.id,
+    typeId: r.type_id,
+    date: r.date,
+    time: r.time,
+    horses: r.horses,
+    note: r.note,
+    done: r.done,
+  }));
+}
+
+/** A day's visits (Today's card). */
+export function getDayAppointments(userId: string, date: string) {
+  return selectAppointments(userId, sql`a.date = ${date}`);
+}
+
+/**
+ * The book: every visit not checked off (any date), the checked-off ones
+ * since `doneSince`, and each horse's latest two of each type however old
+ * (the due dates count from the latest; the one before is there if the
+ * latest is unticked offline).
+ */
+function bookWhere(userId: string, doneSince: string) {
+  return sql`(
+    NOT a.done
+    OR a.date >= ${doneSince}
+    OR a.id IN (
+      SELECT ranked.id FROM (
+        SELECT x.id, row_number() OVER (
+          PARTITION BY xh.horse_id, x.type_id ORDER BY x.date DESC, x.time DESC NULLS LAST, x.created_at DESC
+        ) AS n
+        FROM ${appointments} x JOIN ${appointmentHorses} xh ON xh.appointment_id = x.id
+        WHERE x.user_id = ${userId} AND x.done
+      ) ranked WHERE ranked.n <= 2
+    )
+  )`;
+}
+
+/** What the Visits screen and a horse's page work everything out from (see bookWhere): checked off from the last year, or since `doneSince`. */
+export function getAppointmentBook(
+  userId: string,
+  today: string,
+  { horseId, doneSince = addDays(today, -DONE_DAYS) }: { horseId?: string; doneSince?: string } = {},
+) {
+  const forHorse = horseId
+    ? sql` AND a.id IN (SELECT appointment_id FROM ${appointmentHorses} WHERE horse_id = ${horseId})`
+    : sql``;
+  return selectAppointments(userId, sql`${bookWhere(userId, doneSince)}${forHorse}`);
+}
+
+/** Older checked-off visits are added this many at a time ("Show older visits"). */
+const OLDER_PAGE = 30;
+
+/**
+ * The Visits screen's Done list: every checked-off visit since `since`, a
+ * year back, or an earlier day she has asked for (`from`, from "Show older
+ * visits": a day, so the list doesn't shift when a visit is added or checked
+ * off). `nextSince`: where the next "Show older visits" goes back to (the
+ * next 30 older ones, or all of them when fewer are left), or null when there
+ * are none.
+ */
+export async function getDoneWindow(userId: string, today: string, from?: string) {
+  const yearAgo = addDays(today, -DONE_DAYS);
+  const since = from && from < yearAgo ? (from < "2000-01-01" ? "2000-01-01" : from) : yearAgo;
+  const { rows } = await db.execute<{ nth: string | null; oldest: string | null }>(sql`
+    WITH older AS (
+      SELECT a.date FROM ${appointments} a
+      WHERE a.user_id = ${userId} AND a.done AND a.date < ${since}
+        AND EXISTS (SELECT 1 FROM ${appointmentHorses} ah WHERE ah.appointment_id = a.id)
+    )
+    SELECT
+      (SELECT date::text FROM older ORDER BY date DESC OFFSET ${OLDER_PAGE - 1} LIMIT 1) AS nth,
+      (SELECT min(date)::text FROM older) AS oldest
+  `);
+  const r = rows[0];
+  // Fewer than a page left: all the way back (so a visit logged later from even further back shows too).
+  return { since, extended: since < yearAgo, nextSince: r?.nth ?? (r?.oldest ? "2000-01-01" : null) };
+}
+
+/**
+ * For a day's visits, the others of the same types for the same horses (from
+ * the book): what Today needs to say when each horse is next due, and whether
+ * the next one is booked already.
+ */
+export function getAppointmentsAround(userId: string, today: string, date: string) {
+  return selectAppointments(
+    userId,
+    sql`${bookWhere(userId, addDays(today, -DONE_DAYS))} AND EXISTS (
+      SELECT 1 FROM ${appointmentHorses} x
+      JOIN ${appointmentHorses} dh ON dh.horse_id = x.horse_id
+      JOIN ${appointments} d ON d.id = dh.appointment_id
+      WHERE x.appointment_id = a.id AND d.user_id = ${userId} AND d.date = ${date} AND d.type_id = a.type_id
+    )`,
+  );
+}
+
+/** Visits for this horse alone: deleting the horse deletes them (shared ones keep the other horses). */
+export async function countHorseOnlyAppointments(userId: string, horseId: string) {
+  const { rows } = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM ${appointments} a
+    WHERE a.user_id = ${userId}
+      AND EXISTS (SELECT 1 FROM ${appointmentHorses} ah WHERE ah.appointment_id = a.id AND ah.horse_id = ${horseId})
+      AND NOT EXISTS (SELECT 1 FROM ${appointmentHorses} o WHERE o.appointment_id = a.id AND o.horse_id <> ${horseId})
+  `);
+  return rows[0]?.n ?? 0;
+}
+
+/** Visits with a horse (as the screens and the CSV show them). */
+export async function countAppointments(userId: string) {
+  const { rows } = await db.execute<{ n: number }>(sql`
+    SELECT count(*)::int AS n FROM ${appointments} a
+    WHERE a.user_id = ${userId}
+      AND EXISTS (SELECT 1 FROM ${appointmentHorses} ah WHERE ah.appointment_id = a.id)
+  `);
+  return rows[0]?.n ?? 0;
+}
+
+export async function getAppointmentsForExport(userId: string) {
+  const { rows } = await db.execute<{
+    date: string;
+    time: string | null;
+    type: string;
+    done: boolean;
+    note: string;
+    horses: string;
+  }>(sql`
+    SELECT a.date::text AS date, a.time, t.name AS type, a.done, a.note,
+      string_agg(h.name, '; ' ORDER BY lower(h.name)) AS horses
+    FROM ${appointments} a
+    JOIN ${appointmentTypes} t ON t.id = a.type_id
+    JOIN ${appointmentHorses} ah ON ah.appointment_id = a.id
+    JOIN ${horses} h ON h.id = ah.horse_id
+    WHERE a.user_id = ${userId}
+    GROUP BY a.id, t.name
+    ORDER BY a.date DESC, a.time ASC NULLS FIRST, a.created_at DESC
+  `);
+  return rows;
 }

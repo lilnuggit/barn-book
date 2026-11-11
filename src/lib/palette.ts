@@ -26,3 +26,17 @@ export const DEFAULT_ACTIVITIES: { name: string; color: PaletteColor }[] = [
   { name: "Pole Work", color: "amber" },
   { name: "Conditioning", color: "sky" },
 ];
+
+/** Starting types of visit, with a reminder for the two that come round on a schedule. Editable in Settings. */
+export const DEFAULT_APPOINTMENT_TYPES: {
+  name: string;
+  color: PaletteColor;
+  every: { count: number; unit: "week" | "month" } | null;
+}[] = [
+  { name: "Farrier", color: "clay", every: { count: 6, unit: "week" } },
+  { name: "Vet", color: "rose", every: null },
+  { name: "Dentist", color: "sky", every: { count: 12, unit: "month" } },
+  { name: "PEMF", color: "indigo", every: null },
+  { name: "Bodywork", color: "sage", every: null },
+  { name: "Chiro", color: "plum", every: null },
+];

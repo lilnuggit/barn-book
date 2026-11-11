@@ -4,7 +4,8 @@
  * and the write retried; bad input shows a message.
  */
 export type ActionResult =
-  | { ok: true }
+  /** userId: the account it was saved to (missing from versions of the server before visits). */
+  | { ok: true; userId?: string }
   | { ok: false; reason: "signed-out" }
   | { ok: false; reason: "invalid"; error: string };
 

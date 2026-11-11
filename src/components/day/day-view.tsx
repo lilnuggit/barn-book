@@ -3,9 +3,11 @@
 import { CalendarDays, ChevronLeft, ChevronRight, CircleCheck, Copy, Loader2, Plus } from "lucide-react";
 import Link, { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { EntryStatus } from "@/db/schema";
 import type { SyncResult } from "@/lib/action-result";
+import { applyAppointmentChanges, applyAppointmentTypeChanges, waitingAppointmentIds } from "@/lib/appointment-changes";
+import { appointmentOrder, type AppointmentLite, type AppointmentTypeLite } from "@/lib/appointments";
 import type { ActivityLite, CopySuggestion, DayEntry, HorseLite } from "@/lib/data";
 import { addDays, daysBetween, formatLong, formatShort, isISODate, phoneToday, relativeDayName } from "@/lib/dates";
 import {
@@ -21,12 +23,28 @@ import {
   useSyncStuck,
   type OutboxItem,
 } from "@/lib/sync";
+import { AppointmentSheet } from "../appointments/appointment-sheet";
+import { DayAppointments } from "../appointments/day-appointments";
+import {
+  closeAppointmentSheetIfClean,
+  openAppointmentSession,
+  useAppointmentScreen,
+} from "../appointments/sheet-state";
 import { HorseshoeMark } from "../icons";
 import { headerButtonClass } from "../page-header";
 import { toast } from "../toast";
 import { cx } from "../ui";
-import { addedLines, applyActivityChanges, applyDayChanges, saveDayCopy } from "@/lib/day-copy";
+import {
+  addedLines,
+  applyActivityChanges,
+  applyDayChanges,
+  horsesWithChanges,
+  keepPairs,
+  pairsOf,
+  saveDayCopy,
+} from "@/lib/day-copy";
 import { busyEditing } from "@/lib/editing";
+import { usePhoneToday, whenLoaded } from "@/lib/phone-today";
 import { AddSheet } from "./add-sheet";
 import { sheetDraftEmpty, useDayScreen, useDayUi } from "./day-open-state";
 import { orderForToday, useCardMoves } from "./day-order";
@@ -46,6 +64,13 @@ type Props = {
   horses: HorseLite[];
   activities: ActivityLite[];
   suggestions: CopySuggestion[];
+  /** The day's visits (missing when drawn from a copy kept by an older version: no visits shown then). */
+  appointments?: AppointmentLite[];
+  appointmentTypes?: AppointmentTypeLite[];
+  /** Other visits of the same types for the same horses: when they're next due, and what's booked already. */
+  appointmentsAround?: AppointmentLite[];
+  /** The pairs those were loaded for (a copy's); live: the day's visits from the server. */
+  aroundPairs?: string[];
 };
 
 /**
@@ -67,33 +92,7 @@ function waitingEntryIds(pending: OutboxItem[], stuck: boolean): Set<string> {
   return ids;
 }
 
-function subscribeToClock(onChange: () => void) {
-  const timer = setInterval(onChange, 30_000);
-  document.addEventListener("visibilitychange", onChange);
-  return () => {
-    clearInterval(timer);
-    document.removeEventListener("visibilitychange", onChange);
-  };
-}
-
-/**
- * The phone's own date. The server's "today" is from when the page loaded; an
- * app left open overnight would otherwise call yesterday "Today" until it can
- * reach the server again.
- */
-function usePhoneToday(serverToday: string) {
-  return useSyncExternalStore(subscribeToClock, () => phoneToday(), () => serverToday);
-}
-
 const NO_SIGNAL_DAYS = "No signal — other days load once you’re back online";
-
-/** "at 8:00 AM", or "on Sun, Nov 8 at 8:00 AM" when it wasn't today. */
-function whenLoaded(at: number, locale: string) {
-  const time = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(at);
-  if (phoneToday(new Date(at)) === phoneToday()) return `at ${time}`;
-  const day = new Intl.DateTimeFormat(locale, { weekday: "short", month: "short", day: "numeric" }).format(at);
-  return `on ${day} at ${time}`;
-}
 
 /**
  * When a horse is finished, for its place at the bottom of the list: now
@@ -121,11 +120,16 @@ export function DayView({
   horses,
   activities,
   suggestions,
+  appointments,
+  appointmentTypes,
+  appointmentsAround,
+  aroundPairs,
 }: Props) {
   // Open card and add sheet: shared by every copy of this day's screen (see
   // day-open-state). First, so a new screen for the day starts afresh before
   // anything reads them.
   useDayScreen(date);
+  useAppointmentScreen(`day:${date}`);
   const [{ expandedId, sheetOpen, typingIn, held }, updateOpen] = useDayUi(date);
   const router = useRouter();
   const pending = usePendingWrites();
@@ -149,22 +153,27 @@ export function DayView({
   // phone's day has moved past it, however it came back on screen.
   const staleToday = (date === dayWhenShown && now > dayWhenShown) || (!pinned && date === today && now > today);
   // What was open when she came back to the app (unlocked the phone, switched
-  // back to it): the add sheet, and the note box that had the keyboard.
+  // back to it): the add sheet, a visit's sheet, and the note box that had the keyboard.
   const sheetOpenNow = useRef(sheetOpen);
   useLayoutEffect(() => {
     sheetOpenNow.current = sheetOpen;
   });
-  const leftOpen = useRef<{ at: number; sheet: boolean; note: Element | null } | null>(null);
+  const leftOpen = useRef<{ at: number; sheet: boolean; visit: number | null; note: Element | null } | null>(null);
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       const el = document.activeElement;
       const note = el instanceof HTMLTextAreaElement && el.dataset.noteFor ? el : null;
-      leftOpen.current = { at: Date.now(), sheet: sheetOpenNow.current, note };
+      leftOpen.current = {
+        at: Date.now(),
+        sheet: sheetOpenNow.current,
+        visit: openAppointmentSession(`day:${date}`),
+        note,
+      };
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, []);
+  }, [date]);
   // Waiting for her to finish (sheet open, typing) before loading the new day.
   const [heldForEditing, setHeldForEditing] = useState(false);
   useEffect(() => {
@@ -180,6 +189,8 @@ export function DayView({
         // what she opens now.
         leftOpen.current = null;
         if (left.sheet) updateOpen((ui) => (ui.sheetOpen && sheetDraftEmpty(date) ? { sheetOpen: false } : {}));
+        // Only that opening of the visit sheet: not one she has opened since.
+        if (left.visit !== null) closeAppointmentSheetIfClean(`day:${date}`, left.visit, phoneToday());
         if (left.note && document.activeElement === left.note && left.note instanceof HTMLElement) left.note.blur();
       }
       // Not while she's in the middle of something: a new day's list would
@@ -219,7 +230,39 @@ export function DayView({
   // (not the copy kept on the phone, which may be older).
   useEffect(() => {
     if (savedAt === undefined) forgetConfirmedBefore(Date.now());
-  }, [serverEntries, savedAt]);
+  }, [serverEntries, appointments, savedAt]);
+  // The day's visits and the types of visit, with the changes on the phone.
+  const shownTypes = useMemo(
+    () => applyAppointmentTypeChanges(appointmentTypes ?? [], overlay),
+    [appointmentTypes, overlay],
+  );
+  const shownAppointments = useMemo(
+    () =>
+      appointments === undefined
+        ? undefined
+        : [...applyAppointmentChanges(appointments, overlay, (a) => a.date === date)].sort(appointmentOrder(shownTypes)),
+    [appointments, overlay, date, shownTypes],
+  );
+  // The pairs `around` was loaded for: a visit (or horse) joining the day on the phone has no others known.
+  const covered = useMemo(() => new Set(aroundPairs ?? pairsOf(appointments ?? [])), [aroundPairs, appointments]);
+  // The visits around the day's visits, with the changes on the phone (for every pair loaded, and the
+  // day's own as shown), then the day's own.
+  const shownAround = useMemo(
+    () =>
+      appointmentsAround === undefined
+        ? undefined
+        : applyAppointmentChanges(
+            appointmentsAround,
+            overlay,
+            keepPairs([...covered, ...pairsOf(shownAppointments ?? [])]),
+          ),
+    [appointmentsAround, overlay, covered, shownAppointments],
+  );
+  const around = useMemo(() => {
+    if (shownAround === undefined) return undefined;
+    const day = shownAppointments ?? [];
+    return [...shownAround.filter((a) => !day.some((d) => d.id === a.id)), ...day];
+  }, [shownAround, shownAppointments]);
   // Keep what she sees of this day (with her changes), to draw it from with no
   // signal later. Horses added on the phone go along, for the add sheet.
   const waitingHorses = useMemo(
@@ -229,8 +272,38 @@ export function DayView({
   useEffect(() => {
     if (savedAt !== undefined) return;
     const known = [...horses, ...waitingHorses.filter((h) => h && !horses.some((x) => x.id === h.id))];
-    saveDayCopy({ date, today, locale, entries, horses: known, activities, suggestions, loadedAt });
-  }, [savedAt, date, today, locale, entries, horses, waitingHorses, activities, suggestions, loadedAt]);
+    saveDayCopy({
+      date,
+      today,
+      locale,
+      entries,
+      horses: known,
+      activities,
+      suggestions,
+      loadedAt,
+      appointments: shownAppointments,
+      appointmentTypes: appointmentTypes === undefined ? undefined : shownTypes,
+      appointmentsAround: shownAround,
+      aroundPairs: appointmentsAround === undefined ? undefined : [...covered],
+    });
+  }, [
+    savedAt,
+    date,
+    today,
+    locale,
+    entries,
+    horses,
+    waitingHorses,
+    activities,
+    suggestions,
+    loadedAt,
+    shownAppointments,
+    appointmentTypes,
+    shownTypes,
+    shownAround,
+    appointmentsAround,
+    covered,
+  ]);
   function setExpandedId(next: string | null | ((id: string | null) => string | null)) {
     updateOpen((now) => {
       const id = typeof next === "function" ? next(now.expandedId) : next;
@@ -247,6 +320,11 @@ export function DayView({
   const shownActivities = useMemo(() => applyActivityChanges(activities, overlay), [activities, overlay]);
   const activityById = useMemo(() => new Map(shownActivities.map((a) => [a.id, a])), [shownActivities]);
   const waiting = useMemo(() => waitingEntryIds(pending, offline || stuck), [pending, offline, stuck]);
+  const waitingAppts = useMemo(() => waitingAppointmentIds(pending, offline || stuck), [pending, offline, stuck]);
+  // Horses in work as changes on the phone leave them, for the visit sheet.
+  const sheetHorses = useMemo(() => horsesWithChanges(horses, overlay), [horses, overlay]);
+  const inWork = useMemo(() => new Set(sheetHorses.map((h) => h.id)), [sheetHorses]);
+  const visitCtx = { types: shownTypes, today: now, locale, offline, around, inWork, covered };
   const notesSyncing = useMemo(
     () => new Set(pending.filter((i) => i.name === "saveEntryNote").map((i) => i.args[0] as string)),
     [pending],
@@ -328,6 +406,15 @@ export function DayView({
             {whenLoaded(loadedAt ?? savedAt, locale)}, with your changes since. They’re kept and will sync.
           </p>
         )}
+        {shownAppointments && (
+          <DayAppointments
+            date={date}
+            appointments={shownAppointments}
+            types={shownTypes}
+            waiting={waitingAppts}
+            ctx={visitCtx}
+          />
+        )}
         {entries.length === 0 && copying ? (
           <div className="flex flex-col items-center px-4 pt-10 text-center">
             <Loader2 className="size-8 animate-spin text-brand" aria-hidden />
@@ -346,6 +433,7 @@ export function DayView({
             today={now}
             locale={locale}
             hasHorses={horses.length > 0}
+            hasAppointments={Boolean(shownAppointments?.length)}
             suggestions={suggestions}
             onStart={() => setSheetOpen(true)}
             onRepeat={repeat}
@@ -411,6 +499,16 @@ export function DayView({
         activities={shownActivities}
         horseIdsOnDay={new Set(entries.map((e) => e.horseId))}
         onAdd={addToDay}
+      />
+      <AppointmentSheet
+        sheetKey={`day:${date}`}
+        today={now}
+        locale={locale}
+        types={shownTypes}
+        horses={sheetHorses}
+        around={around}
+        covered={covered}
+        offline={offline}
       />
     </>
   );
@@ -569,6 +667,7 @@ function EmptyDay({
   today,
   locale,
   hasHorses,
+  hasAppointments,
   suggestions,
   onStart,
   onRepeat,
@@ -577,6 +676,8 @@ function EmptyDay({
   today: string;
   locale: string;
   hasHorses: boolean;
+  /** The day has visits (shown above): it isn't empty, it just has no work planned. */
+  hasAppointments: boolean;
   suggestions: CopySuggestion[];
   onStart: () => void;
   onRepeat: (s: CopySuggestion) => Promise<SyncResult>;
@@ -616,7 +717,8 @@ function EmptyDay({
     <div className="pt-6">
       <div className="text-center">
         <h2 className="font-serif text-[22px] font-semibold">
-          Nothing planned {dayName === "Today" || dayName === "Tomorrow" ? dayName.toLowerCase() : `for ${dayName}`}
+          {hasAppointments ? "No work planned" : "Nothing planned"}{" "}
+          {dayName === "Today" || dayName === "Tomorrow" ? dayName.toLowerCase() : `for ${dayName}`}
         </h2>
         <p className="mt-1 text-[15px] text-ink-2">Start a list, or repeat a recent one.</p>
       </div>

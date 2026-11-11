@@ -4,11 +4,12 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { PageHeader } from "@/components/page-header";
 import { ActivityManager } from "@/components/settings/activity-manager";
+import { AppointmentTypeManager } from "@/components/settings/appointment-type-manager";
 import { SignOutRow } from "@/components/settings/sign-out-row";
 import { StillLoading } from "@/components/still-loading";
 import { Card, SectionTitle, Skeleton } from "@/components/ui";
 import { requireUserId } from "@/lib/auth";
-import { countEntries, getActivityTypes } from "@/lib/data";
+import { countAppointments, countEntries, getActivityTypes, getAppointmentTypes } from "@/lib/data";
 import { LOCAL_DEV_USER_ID } from "@/lib/dev-mode";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -27,6 +28,10 @@ export default function SettingsPage() {
           }
         >
           <Activities />
+        </Suspense>
+
+        <Suspense fallback={<Skeleton className="h-[420px] rounded-2xl" />}>
+          <AppointmentTypes />
         </Suspense>
 
         <section>
@@ -48,12 +53,25 @@ export default function SettingsPage() {
             <a
               href="/api/export?what=horses"
               download
-              className="flex items-center gap-3 px-4 py-3.5 active:bg-surface-2"
+              className="flex items-center gap-3 border-b border-line px-4 py-3.5 active:bg-surface-2"
             >
               <Download className="size-5 shrink-0 text-brand" />
               <span className="flex-1">
                 <span className="block text-[16px] font-medium">Horses &amp; About notes (CSV)</span>
                 <span className="block text-sm text-ink-3">Every horse, including archived ones</span>
+              </span>
+            </a>
+            <a
+              href="/api/export?what=visits"
+              download
+              className="flex items-center gap-3 px-4 py-3.5 active:bg-surface-2"
+            >
+              <Download className="size-5 shrink-0 text-brand" />
+              <span className="flex-1">
+                <span className="block text-[16px] font-medium">Visits (CSV)</span>
+                <Suspense fallback={<span className="block h-5" />}>
+                  <VisitCount />
+                </Suspense>
               </span>
             </a>
           </Card>
@@ -92,6 +110,22 @@ async function Activities() {
   const userId = await requireUserId();
   const activities = await getActivityTypes(userId);
   return <ActivityManager activities={activities} />;
+}
+
+async function AppointmentTypes() {
+  const userId = await requireUserId();
+  const types = await getAppointmentTypes(userId);
+  return <AppointmentTypeManager types={types} />;
+}
+
+async function VisitCount() {
+  const userId = await requireUserId();
+  const n = await countAppointments(userId);
+  return (
+    <span className="block text-sm text-ink-3">
+      Every visit, booked or done — {n} {n === 1 ? "visit" : "visits"}
+    </span>
+  );
 }
 
 async function EntryCount() {

@@ -1,10 +1,19 @@
 "use server";
 
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { refresh } from "next/cache";
 import { db } from "@/db";
-import { activityTypes, entries, horses, type EntryStatus } from "@/db/schema";
+import {
+  activityTypes,
+  appointmentHorses,
+  appointments,
+  appointmentTypes,
+  entries,
+  horses,
+  type EntryStatus,
+} from "@/db/schema";
 import type { ActionResult } from "@/lib/action-result";
+import { isEvery, type Every } from "@/lib/appointments";
 import { getUserIdOrNull } from "@/lib/auth";
 import { isISODate } from "@/lib/dates";
 import { isPaletteColor, PALETTE } from "@/lib/palette";
@@ -26,8 +35,11 @@ async function write(fn: (userId: string) => Promise<ActionResult | void>): Prom
   if (!userId) return { ok: false, reason: "signed-out" };
   try {
     const result = (await fn(userId)) ?? { ok: true };
-    if (result.ok) refresh();
-    return result;
+    if (!result.ok) return result;
+    refresh();
+    // Says which account it went to: a change made before the phone knew who
+    // is signed in is then applied to that account's copies kept on the phone.
+    return { ok: true, userId };
   } catch (error) {
     if (error instanceof ValidationError) return { ok: false, reason: "invalid", error: error.message };
     throw error;
@@ -299,11 +311,35 @@ export async function setHorseArchived(id: string, archived: boolean): Promise<A
   });
 }
 
-/** The client leaves the horse's page as soon as this is sent; the refresh then updates the list. */
+/**
+ * The client leaves the horse's page as soon as this is sent; the refresh then
+ * updates the list. Visits for this horse alone go with it; shared ones keep
+ * the other horses (the links and the entries cascade).
+ */
 export async function deleteHorse(id: string): Promise<ActionResult> {
   return write(async (userId) => {
     assertUUID(id);
-    await db.delete(horses).where(and(eq(horses.id, id), eq(horses.userId, userId)));
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(appointments)
+        .where(
+          and(
+            eq(appointments.userId, userId),
+            sql`${appointments.id} IN (SELECT appointment_id FROM ${appointmentHorses} WHERE horse_id = ${id})`,
+            sql`NOT EXISTS (SELECT 1 FROM ${appointmentHorses} o WHERE o.appointment_id = ${appointments.id} AND o.horse_id <> ${id})`,
+          ),
+        );
+      await tx.delete(horses).where(and(eq(horses.id, id), eq(horses.userId, userId)));
+      // Visits left with no horse (a delete made by an older version of the app, which kept them) go too.
+      await tx
+        .delete(appointments)
+        .where(
+          and(
+            eq(appointments.userId, userId),
+            sql`NOT EXISTS (SELECT 1 FROM ${appointmentHorses} ah WHERE ah.appointment_id = ${appointments.id})`,
+          ),
+        );
+    });
   });
 }
 
@@ -384,6 +420,204 @@ export async function reorderActivityTypes(orderedIds: string[]): Promise<Action
           .update(activityTypes)
           .set({ sortOrder: index })
           .where(and(eq(activityTypes.id, id), eq(activityTypes.userId, userId)));
+      }
+    });
+  });
+}
+
+// ---------- visits (appointments) ----------
+
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+export type AppointmentInput = {
+  id: string;
+  typeId: string;
+  date: string;
+  /** "HH:MM" (24 h), or null for any time that day. */
+  time: string | null;
+  horseIds: string[];
+  note: string;
+};
+
+export type AppointmentTypeInput = { id: string; name: string; color: string; every: Every | null };
+
+function cleanTime(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string" || !TIME.test(value)) throw new ValidationError("Invalid time");
+  return value;
+}
+
+function cleanEvery(value: unknown) {
+  if (value === null || value === undefined) return { intervalCount: null, intervalUnit: null };
+  if (!isEvery(value)) throw new ValidationError("Pick how often it comes round");
+  return { intervalCount: value.count, intervalUnit: value.unit };
+}
+
+/** Checks a visit from the phone: its shape, and that the type and horses are hers. Never against "today". */
+async function cleanAppointment(userId: string, input: AppointmentInput) {
+  const id = assertUUID(input?.id);
+  const typeId = assertUUID(input.typeId, "type");
+  const date = assertDate(input.date);
+  if (date < "2000-01-01" || date > "2099-12-31") throw new ValidationError("Invalid date");
+  const time = cleanTime(input.time);
+  const note = cleanText(input.note, NOTE_MAX);
+  const picked = uuidList(input.horseIds);
+  if (picked.length === 0) throw new ValidationError("Pick at least one horse");
+  const [type] = await db
+    .select({ id: appointmentTypes.id })
+    .from(appointmentTypes)
+    .where(and(eq(appointmentTypes.id, typeId), eq(appointmentTypes.userId, userId)));
+  if (!type) throw new ValidationError("That type of visit couldn’t be found");
+  const owned = new Set(
+    (
+      await db
+        .select({ id: horses.id })
+        .from(horses)
+        .where(and(eq(horses.userId, userId), inArray(horses.id, picked)))
+    ).map((h) => h.id),
+  );
+  // A horse deleted since is left out (archived ones are fine: past visits keep them).
+  const horseIds = picked.filter((h) => owned.has(h));
+  if (horseIds.length === 0) throw new ValidationError("Those horses couldn’t be found — they may have been deleted");
+  return { id, typeId, date, time, note, horseIds };
+}
+
+/** `done`: logging a visit that already happened. */
+export async function createAppointment(input: AppointmentInput & { done?: boolean }): Promise<ActionResult> {
+  return write(async (userId) => {
+    const a = await cleanAppointment(userId, input);
+    await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(appointments)
+        .values({ id: a.id, userId, typeId: a.typeId, date: a.date, time: a.time, note: a.note, done: input.done === true })
+        .onConflictDoNothing({ target: appointments.id })
+        .returning({ id: appointments.id });
+      // Already there: a save that arrived twice (its horses went in with it).
+      if (!created) return;
+      await tx.insert(appointmentHorses).values(a.horseIds.map((horseId) => ({ appointmentId: a.id, horseId })));
+    });
+  });
+}
+
+/** Everything but "done", which only setAppointmentDone changes (so an edit and a check-off never undo each other). */
+export async function updateAppointment(input: AppointmentInput): Promise<ActionResult> {
+  return write(async (userId) => {
+    const a = await cleanAppointment(userId, input);
+    await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(appointments)
+        .set({ typeId: a.typeId, date: a.date, time: a.time, note: a.note })
+        .where(and(eq(appointments.id, a.id), eq(appointments.userId, userId)))
+        .returning({ id: appointments.id });
+      if (!updated) throw new ValidationError("That visit couldn’t be found — it may have been deleted");
+      // Add before removing, so the visit never has no horses.
+      await tx
+        .insert(appointmentHorses)
+        .values(a.horseIds.map((horseId) => ({ appointmentId: a.id, horseId })))
+        .onConflictDoNothing();
+      await tx
+        .delete(appointmentHorses)
+        .where(and(eq(appointmentHorses.appointmentId, a.id), notInArray(appointmentHorses.horseId, a.horseIds)));
+    });
+  });
+}
+
+/** Quietly does nothing if the visit is gone (deleted on another phone). */
+export async function setAppointmentDone(id: string, done: boolean): Promise<ActionResult> {
+  return write(async (userId) => {
+    assertUUID(id);
+    if (typeof done !== "boolean") throw new ValidationError("Invalid status");
+    await db
+      .update(appointments)
+      .set({ done })
+      .where(and(eq(appointments.id, id), eq(appointments.userId, userId)));
+  });
+}
+
+export async function deleteAppointment(id: string): Promise<ActionResult> {
+  return write(async (userId) => {
+    assertUUID(id);
+    await db.delete(appointments).where(and(eq(appointments.id, id), eq(appointments.userId, userId)));
+  });
+}
+
+function cleanAppointmentType(input: AppointmentTypeInput) {
+  const id = assertUUID(input?.id);
+  const name = cleanText(input.name, NAME_MAX);
+  if (!name) throw new ValidationError("Type a name");
+  const color = isPaletteColor(input.color) ? input.color : "slate";
+  return { id, name, color, ...cleanEvery(input.every) };
+}
+
+/**
+ * The phone chooses the id, so a type added with no signal can be booked at
+ * once (the visits wait behind it in the queue). A name that's already on the
+ * list is let through on purpose: the phone checks before sending, and
+ * refusing here would lose the visits queued behind it.
+ */
+export async function createAppointmentType(input: AppointmentTypeInput): Promise<ActionResult> {
+  return write(async (userId) => {
+    const t = cleanAppointmentType(input);
+    const [{ max }] = await db
+      .select({ max: sql<number>`coalesce(max(${appointmentTypes.sortOrder}), -1)::int` })
+      .from(appointmentTypes)
+      .where(eq(appointmentTypes.userId, userId));
+    await db
+      .insert(appointmentTypes)
+      .values({ ...t, userId, sortOrder: max + 1 })
+      .onConflictDoNothing({ target: appointmentTypes.id });
+  });
+}
+
+export async function updateAppointmentType(input: AppointmentTypeInput): Promise<ActionResult> {
+  return write(async (userId) => {
+    const t = cleanAppointmentType(input);
+    const [current] = await db
+      .select({ name: appointmentTypes.name })
+      .from(appointmentTypes)
+      .where(and(eq(appointmentTypes.id, t.id), eq(appointmentTypes.userId, userId)));
+    if (!current) return;
+    // Only a real rename is checked, so both of a pair added on two phones stay editable.
+    if (current.name.toLowerCase() !== t.name.toLowerCase()) {
+      const [clash] = await db
+        .select({ id: appointmentTypes.id })
+        .from(appointmentTypes)
+        .where(
+          and(
+            eq(appointmentTypes.userId, userId),
+            sql`lower(${appointmentTypes.name}) = lower(${t.name})`,
+            sql`${appointmentTypes.id} <> ${t.id}`,
+            isNull(appointmentTypes.archivedAt),
+          ),
+        );
+      if (clash) throw new ValidationError("Another type of visit already has that name");
+    }
+    await db
+      .update(appointmentTypes)
+      .set({ name: t.name, color: t.color, intervalCount: t.intervalCount, intervalUnit: t.intervalUnit })
+      .where(and(eq(appointmentTypes.id, t.id), eq(appointmentTypes.userId, userId)));
+  });
+}
+
+export async function setAppointmentTypeArchived(id: string, archived: boolean): Promise<ActionResult> {
+  return write(async (userId) => {
+    assertUUID(id);
+    await db
+      .update(appointmentTypes)
+      .set({ archivedAt: archived ? new Date() : null })
+      .where(and(eq(appointmentTypes.id, id), eq(appointmentTypes.userId, userId)));
+  });
+}
+
+export async function reorderAppointmentTypes(orderedIds: string[]): Promise<ActionResult> {
+  return write(async (userId) => {
+    const ids = uuidList(orderedIds, 200);
+    await db.transaction(async (tx) => {
+      for (const [index, id] of ids.entries()) {
+        await tx
+          .update(appointmentTypes)
+          .set({ sortOrder: index })
+          .where(and(eq(appointmentTypes.id, id), eq(appointmentTypes.userId, userId)));
       }
     });
   });

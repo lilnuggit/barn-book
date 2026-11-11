@@ -2,6 +2,8 @@
 
 import type { EntryStatus } from "@/db/schema";
 import { currentUser } from "./account";
+import type { AppointmentLite, AppointmentTypeLite } from "./appointments";
+import { applyAppointmentChanges, applyAppointmentTypeChanges } from "./appointment-changes";
 import type { ActivityLite, CopySuggestion, DayEntry, HorseLite } from "./data";
 import { daysBetween, phoneToday } from "./dates";
 import type { OutboxItem } from "./sync";
@@ -25,6 +27,13 @@ export type DayCopy = {
   horses: HorseLite[];
   activities: ActivityLite[];
   suggestions: CopySuggestion[];
+  /** The day's visits and the types of visit (missing on copies kept by older versions: show no visits then). */
+  appointments?: AppointmentLite[];
+  appointmentTypes?: AppointmentTypeLite[];
+  /** Other visits of the same types for the same horses (see aroundPairs): when each is next due, what's booked. */
+  appointmentsAround?: AppointmentLite[];
+  /** The "type|horse" pairs appointmentsAround was loaded for (a visit joining the day on the phone isn't covered). */
+  aroundPairs?: string[];
   /**
    * When the list was loaded from the server. Changes made on this phone since
    * are in the copy too, but not ones made elsewhere. (Missing on copies kept
@@ -47,7 +56,7 @@ export function addedLines(item: OutboxItem): DayEntry[] | undefined {
   return Array.isArray(lines) ? (lines as DayEntry[]) : undefined;
 }
 
-/** Horses as changes made on the phone leave them: renamed, recoloured, archived, deleted. */
+/** Horses in work as changes made on the phone leave them: renamed, recoloured, archived, back in work, deleted. */
 export function applyHorseChanges(horses: HorseLite[], changes: OutboxItem[]): HorseLite[] {
   let out = horses;
   for (const item of changes) {
@@ -60,6 +69,12 @@ export function applyHorseChanges(horses: HorseLite[], changes: OutboxItem[]): H
       }
     } else if ((item.name === "setHorseArchived" && second === true) || item.name === "deleteHorse") {
       if (out.some((x) => x.id === first)) out = out.filter((x) => x.id !== first);
+    } else if (item.name === "setHorseArchived" && second === false) {
+      // Back in work: the change carries the horse (ones queued by older versions don't).
+      const h = item.meta as HorseLite | undefined;
+      if (h && h.id === first && typeof h.name === "string" && !out.some((x) => x.id === h.id)) {
+        out = [...out, { id: h.id, name: h.name, color: h.color }];
+      }
     }
   }
   return out;
@@ -166,6 +181,8 @@ function store(copies: DayCopy[]) {
 }
 
 const waitingForSignIn = new Map<string, Omit<DayCopy, "savedAt" | "userId">>();
+/** Changes confirmed while views wait for sign-in, with the account each was saved to. */
+let confirmedWhileWaiting: { item: OutboxItem; owner: string | null }[] = [];
 let signInPoll: ReturnType<typeof setInterval> | undefined;
 
 /** Keeps what the rider sees of a day. Waits for sign-in to load (the copy must be tagged with the account). */
@@ -181,8 +198,17 @@ export function saveDayCopy(copy: Omit<DayCopy, "savedAt" | "userId">) {
         clearInterval(signInPoll);
         signInPoll = undefined;
         const waiting = [...waitingForSignIn.values()];
+        const changes = confirmedWhileWaiting;
         waitingForSignIn.clear();
-        if (currentUser() !== undefined) for (const c of waiting) saveDayCopy(c);
+        confirmedWhileWaiting = [];
+        const me = currentUser();
+        if (me === undefined) return;
+        for (const view of waiting) {
+          // Changes confirmed (and patched into the stored copies) since it was captured.
+          let v: Omit<DayCopy, "savedAt" | "userId"> | null = view;
+          for (const ch of changes) if (v && ch.owner === me) v = patchDay(v, ch.item);
+          if (v) saveDayCopy(v);
+        }
       }, 500);
     }
     return;
@@ -202,12 +228,58 @@ export function readDayCopy(date: string): DayCopy | null {
   return load().find((d) => d.date === date && d.userId === userId) ?? null;
 }
 
-/** The server confirmed a change: apply it to the copies it touches. */
-export function patchDayCopies(item: OutboxItem) {
+type DayView = Omit<DayCopy, "savedAt" | "userId">;
+
+/**
+ * One confirmed change applied to a day's copy (or to a day's view waiting to
+ * be kept). Null: the copy no longer shows the day as it is.
+ */
+function patchDay<T extends DayView>(copy: T, item: OutboxItem): T | null {
+  const second = (item.args as unknown[])[1];
+  let c = copy;
+  const entries = applyDayChanges(c.entries, [item], c.date);
+  if (entries !== c.entries) c = { ...c, entries };
+  const horses = applyHorseChanges(c.horses, [item]);
+  if (horses !== c.horses) c = { ...c, horses };
+  const activities = applyActivityChanges(c.activities, [item]);
+  if (activities !== c.activities) c = { ...c, activities };
+  // Only copies that have them: one kept by an older version can't tell "no visits" from "not known".
+  if (c.appointments) {
+    const day = c.date;
+    const shown = applyAppointmentChanges(c.appointments, [item], (a) => a.date === day);
+    if (shown !== c.appointments) c = { ...c, appointments: shown };
+  }
+  if (c.appointmentTypes) {
+    const types = applyAppointmentTypeChanges(c.appointmentTypes, [item]);
+    if (types !== c.appointmentTypes) c = { ...c, appointmentTypes: types };
+  }
+  if (c.appointmentsAround) {
+    // Kept up to date for every pair it was loaded for (even while none of the day's visits has it), and the day's own.
+    const keep = keepPairs([...(c.aroundPairs ?? []), ...pairsOf(c.appointments ?? [])]);
+    const around = applyAppointmentChanges(c.appointmentsAround, [item], keep);
+    if (around !== c.appointmentsAround) c = { ...c, appointmentsAround: around };
+  }
+  switch (item.name) {
+    case "createHorse": {
+      const h = item.meta as HorseLite | undefined;
+      if (h && !c.horses.some((x) => x.id === h.id)) c = { ...c, horses: [...c.horses, h] };
+      break;
+    }
+    case "copyDay":
+      // A repeat queued by an older version of the app, without its lines:
+      // they get their ids on the server, so this copy no longer shows the day.
+      if (c.date === second && !addedLines(item)) return null;
+      break;
+  }
+  return c;
+}
+
+/** The server confirmed a change (saved to `owner`'s account): apply it to the copies it touches. */
+export function patchDayCopies(item: OutboxItem, owner: string | null = item.userId ?? null) {
+  // A day's view waiting for sign-in was captured before this: it gets it too, before it's kept.
+  if (waitingForSignIn.size > 0) confirmedWhileWaiting.push({ item, owner });
   const copies = load();
   if (copies.length === 0) return;
-  const owner = item.userId ?? null;
-  const second = (item.args as unknown[])[1];
   let changed = false;
   const next: DayCopy[] = [];
   for (const copy of copies) {
@@ -215,33 +287,13 @@ export function patchDayCopies(item: OutboxItem) {
       next.push(copy);
       continue;
     }
-    let c = copy;
-    const entries = applyDayChanges(c.entries, [item], c.date);
-    if (entries !== c.entries) c = { ...c, entries };
-    const horses = applyHorseChanges(c.horses, [item]);
-    if (horses !== c.horses) c = { ...c, horses };
-    const activities = applyActivityChanges(c.activities, [item]);
-    if (activities !== c.activities) c = { ...c, activities };
-    switch (item.name) {
-      case "createHorse": {
-        const h = item.meta as HorseLite | undefined;
-        if (h && !c.horses.some((x) => x.id === h.id)) c = { ...c, horses: [...c.horses, h] };
-        break;
-      }
-      case "copyDay":
-        // A repeat queued by an older version of the app, without its lines:
-        // they get their ids on the server, so this copy no longer shows the day.
-        if (c.date === second && !addedLines(item)) {
-          changed = true;
-          continue;
-        }
-        break;
-    }
-    if (c !== copy) {
+    const c = patchDay(copy, item);
+    if (c === null) {
       changed = true;
-      c = { ...c, savedAt: Date.now() };
+      continue;
     }
-    next.push(c);
+    if (c !== copy) changed = true;
+    next.push(c === copy ? copy : { ...c, savedAt: Date.now() });
   }
   if (changed) store(next);
 }
@@ -249,9 +301,33 @@ export function patchDayCopies(item: OutboxItem) {
 /** After signing out: nothing of this account stays on the phone. */
 export function clearDayCopies() {
   waitingForSignIn.clear();
+  confirmedWhileWaiting = [];
   try {
     localStorage.removeItem(KEY);
   } catch {
     // ignore
   }
+}
+
+/** Horses in work as changes on the phone leave them: added there, renamed, archived, deleted. A–Z. */
+export function horsesWithChanges(horses: HorseLite[], changes: OutboxItem[]): HorseLite[] {
+  const byId = new Map(horses.map((h) => [h.id, h]));
+  for (const item of changes) {
+    const h = item.name === "createHorse" ? (item.meta as HorseLite | undefined) : undefined;
+    if (h && typeof h.id === "string" && !byId.has(h.id)) byId.set(h.id, h);
+  }
+  return applyHorseChanges([...byId.values()], changes).sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
+}
+
+/** The "type|horse" pairs of some visits. */
+export function pairsOf(visits: readonly AppointmentLite[]): string[] {
+  return [...new Set(visits.flatMap((d) => d.horses.map((h) => `${d.typeId}|${h.id}`)))];
+}
+
+/** Visits of these "type|horse" pairs. */
+export function keepPairs(pairs: Iterable<string>): (a: AppointmentLite) => boolean {
+  const set = new Set(pairs);
+  return (a) => a.horses.some((h) => set.has(`${a.typeId}|${h.id}`));
 }

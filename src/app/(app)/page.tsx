@@ -6,7 +6,10 @@ import { requireUserId } from "@/lib/auth";
 import {
   getActiveHorses,
   getActivityTypes,
+  getAppointmentsAround,
+  getAppointmentTypes,
   getCopySuggestions,
+  getDayAppointments,
   getDayEntries,
 } from "@/lib/data";
 import { isISODate } from "@/lib/dates";
@@ -27,10 +30,13 @@ async function Day({ searchParams }: { searchParams: PageProps<"/">["searchParam
   const [{ today, locale }, params] = await Promise.all([getRequestPrefs(), searchParams]);
   const date = isISODate(params.d) ? params.d : today;
 
-  const [entries, horses, activities] = await Promise.all([
+  const [entries, horses, activities, appointments, appointmentTypes, appointmentsAround] = await Promise.all([
     getDayEntries(userId, date),
     getActiveHorses(userId),
     getActivityTypes(userId),
+    getDayAppointments(userId, date),
+    getAppointmentTypes(userId),
+    getAppointmentsAround(userId, today, date),
   ]);
   const suggestions = entries.length === 0 ? await getCopySuggestions(userId, date) : [];
   // When this was read, so the copy kept on the phone can say how old it is.
@@ -49,6 +55,9 @@ async function Day({ searchParams }: { searchParams: PageProps<"/">["searchParam
       horses={horses}
       activities={activities}
       suggestions={suggestions}
+      appointments={appointments}
+      appointmentTypes={appointmentTypes}
+      appointmentsAround={appointmentsAround}
     />
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarCheck, CloudOff, NotebookText, RefreshCw, Settings } from "lucide-react";
+import { CalendarCheck, CalendarClock, CloudOff, NotebookText, RefreshCw, Settings } from "lucide-react";
 import Link from "next/link";
 import { useSelectedLayoutSegment } from "next/navigation";
 import { Suspense } from "react";
@@ -13,6 +13,7 @@ import { cx } from "./ui";
 const TABS = [
   { href: "/", segment: null, label: "Today", Icon: CalendarCheck },
   { href: "/horses", segment: "horses", label: "Horses", Icon: HorseshoeIcon },
+  { href: "/visits", segment: "visits", label: "Visits", Icon: CalendarClock },
   { href: "/history", segment: "history", label: "History", Icon: NotebookText },
   { href: "/settings", segment: "settings", label: "Settings", Icon: Settings },
 ] as const;
@@ -40,7 +41,7 @@ function TabBarView({ active }: { active: string | null | undefined }) {
     >
       <StuckScreen />
       <SyncStatus />
-      <ul className="mx-auto grid max-w-xl grid-cols-4">
+      <ul className="mx-auto grid max-w-xl grid-cols-5">
         {TABS.map(({ href, segment: s, label, Icon }) => {
           const isActive = active === s;
           return (

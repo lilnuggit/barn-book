@@ -22,6 +22,8 @@ export function Sheet({
   saveDisabled = false,
   dirty = false,
   busy = false,
+  closeLabel = "Done",
+  titleId,
 }: {
   open: boolean;
   onClose: () => void;
@@ -39,6 +41,10 @@ export function Sheet({
    * wait a long time) but it can't be discarded any more, so don't ask.
    */
   busy?: boolean;
+  /** The default layout's close button: "Done", or "Cancel" when closing drops what's in the sheet. */
+  closeLabel?: "Done" | "Cancel";
+  /** Gives the title this id and makes it focusable (for moving focus to it when the sheet's content changes). */
+  titleId?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   /** What the parent wants. */
@@ -130,11 +136,21 @@ export function Sheet({
       ) : (
         <div className="flex items-start justify-between gap-3 pt-1 pr-3 pb-3 pl-5">
           <div className="min-w-0 pt-1">
-            <h2 className="font-serif text-[22px] leading-tight font-semibold">{title}</h2>
+            <h2
+              id={titleId}
+              tabIndex={titleId ? -1 : undefined}
+              className="font-serif text-[22px] leading-tight font-semibold focus:outline-none"
+            >
+              {title}
+            </h2>
             {subtitle && <p className="mt-0.5 text-sm text-ink-3">{subtitle}</p>}
           </div>
-          <button type="button" onClick={requestClose} className={`${button} font-semibold text-brand`}>
-            Done
+          <button
+            type="button"
+            onClick={requestClose}
+            className={`${button} ${closeLabel === "Cancel" ? "text-ink-2" : "font-semibold text-brand"}`}
+          >
+            {closeLabel}
           </button>
         </div>
       )}

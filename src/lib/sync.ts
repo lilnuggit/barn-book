@@ -7,21 +7,30 @@ import {
   addEntries,
   copyDay,
   createActivityType,
+  createAppointment,
+  createAppointmentType,
   createHorse,
+  deleteAppointment,
   deleteEntry,
   deleteHorse,
   refreshPage,
   reorderActivityTypes,
+  reorderAppointmentTypes,
   saveEntryNote,
   setActivityArchived,
+  setAppointmentDone,
+  setAppointmentTypeArchived,
   setEntryActivities,
   setEntryStatus,
   setHorseArchived,
   updateActivityType,
+  updateAppointment,
+  updateAppointmentType,
   updateHorse,
 } from "@/app/actions";
 import { toast } from "@/components/toast";
 import { clerk, currentUser, usesClerk } from "./account";
+import { patchAppointmentsCopy } from "./appointments-copy";
 import { patchDayCopies } from "./day-copy";
 import { busyEditing } from "./editing";
 import type { ActionResult, SyncResult } from "./action-result";
@@ -49,17 +58,25 @@ const ACTIONS = {
   addEntries,
   copyDay,
   createActivityType,
+  createAppointment,
+  createAppointmentType,
   createHorse,
+  deleteAppointment,
   deleteEntry,
   deleteHorse,
   refreshPage,
   reorderActivityTypes,
+  reorderAppointmentTypes,
   saveEntryNote,
   setActivityArchived,
+  setAppointmentDone,
+  setAppointmentTypeArchived,
   setEntryActivities,
   setEntryStatus,
   setHorseArchived,
   updateActivityType,
+  updateAppointment,
+  updateAppointmentType,
   updateHorse,
 };
 
@@ -570,6 +587,53 @@ function sendRefreshNow() {
 let clerkWatch: ReturnType<typeof setInterval> | undefined;
 
 /** Sign-in is still loading: go again the moment it's ready (no back-off). */
+/**
+ * Confirmed changes whose account isn't known yet (made before sign-in had
+ * loaded, and confirmed by a server too old to say), in the order they were
+ * confirmed; `owner` once known.
+ */
+let unpatched: { item: OutboxItem; owner: string | null | undefined }[] = [];
+let patchWatch: ReturnType<typeof setInterval> | undefined;
+
+/** Applies the waiting ones, in order, as far as their account is known. True when none are left. */
+function flushUnpatched(): boolean {
+  while (unpatched.length > 0) {
+    const { item, owner } = unpatched[0]!;
+    const account = owner !== undefined ? owner : currentUser();
+    if (account === undefined) return false;
+    unpatched.shift();
+    patchDayCopies(item, account);
+    patchAppointmentsCopy(item, account);
+  }
+  return true;
+}
+
+/**
+ * Brings the copies kept on the phone up to date with a change the server
+ * confirmed, for the account it was saved to: the change's own, else the one
+ * the server says it went to (`savedTo`), else whoever is signed in once
+ * Clerk has loaded. Always in the order the changes were confirmed.
+ */
+function patchCopies(item: OutboxItem, savedTo?: string) {
+  const owner = item.userId ?? (usesClerk() ? (savedTo ?? currentUser()) : null);
+  if (flushUnpatched() && owner !== undefined) {
+    patchDayCopies(item, owner);
+    patchAppointmentsCopy(item, owner);
+    return;
+  }
+  unpatched.push({ item, owner });
+  if (patchWatch) return;
+  let tries = 0;
+  patchWatch = setInterval(() => {
+    tries += 1;
+    if (!flushUnpatched() && tries < 400) return;
+    clearInterval(patchWatch);
+    patchWatch = undefined;
+    // Sign-in never loaded: the next screens loaded with signal save fresh copies anyway.
+    unpatched = [];
+  }, 300);
+}
+
 function replayWhenClerkLoads() {
   if (clerkWatch) return;
   clerkWatch = setInterval(() => {
@@ -738,7 +802,7 @@ async function process(id: string): Promise<void> {
     } else {
       commit(stored().filter((i) => i.id !== id));
       setStuck(false); // the server answered
-      if (result.ok) patchDayCopies(item); // the copies kept for offline use catch up
+      if (result.ok) patchCopies(item, result.userId); // the copies kept for offline use catch up
       // Made before the app was closed or reloaded, so no screen is waiting to
       // say it was refused: say it here.
       if (!result.ok && result.reason === "invalid" && !waiters.has(id)) toast(`${describe(item)}: ${result.error}`);
@@ -771,7 +835,21 @@ async function process(id: string): Promise<void> {
 function describe(item: OutboxItem): string {
   const name = (item.args[0] as { name?: unknown } | undefined)?.name;
   const called = typeof name === "string" ? name.trim() : "";
+  const label = (item.meta as { label?: unknown } | undefined)?.label;
+  const visit = typeof label === "string" ? label : "";
   switch (item.name) {
+    case "createAppointment":
+      return visit ? `Couldn’t add the ${visit}` : "Couldn’t add a visit";
+    case "updateAppointment":
+      return visit ? `Couldn’t save the changes to the ${visit}` : "Couldn’t save a visit’s changes";
+    case "setAppointmentDone":
+      return "Couldn’t check off a visit";
+    case "deleteAppointment":
+      return "Couldn’t delete a visit";
+    case "createAppointmentType":
+      return called ? `Couldn’t add “${called}”` : "Couldn’t add a type of visit";
+    case "updateAppointmentType":
+      return called ? `Couldn’t rename a type of visit to “${called}”` : "Couldn’t change a type of visit";
     case "updateActivityType":
       return called ? `Couldn’t rename a type of work to “${called}”` : "Couldn’t rename a type of work";
     case "createActivityType":

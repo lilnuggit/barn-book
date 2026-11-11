@@ -182,7 +182,16 @@ type HorseFields = { name: string; color: string; notes: string };
 export function EditHorseButton({
   horse: fromServer,
 }: {
-  horse: { id: string; name: string; color: string; notes: string; archived: boolean; entryCount: number };
+  horse: {
+    id: string;
+    name: string;
+    color: string;
+    notes: string;
+    archived: boolean;
+    entryCount: number;
+    /** Visits for this horse alone (deleted with it; shared ones keep the other horses). */
+    visitCount: number;
+  };
 }) {
   const router = useRouter();
   const offline = useNoSignal();
@@ -256,22 +265,37 @@ export function EditHorseButton({
 
   function save() {
     if (!name.trim() || session.busy) return;
-    submit(run("updateHorse", [{ id: horse.id, name, color, notes }], { key: `horse-edit:${horse.id}` }), "Saved");
+    // To the back of the line: a visit or a day's line booked meanwhile carries the
+    // horse's name as it was then, and this rename must come after it to show.
+    submit(
+      run("updateHorse", [{ id: horse.id, name, color, notes }], { key: `horse-edit:${horse.id}`, replaceInPlace: false }),
+      "Saved",
+    );
   }
 
   function toggleArchive() {
     if (session.busy) return;
     submit(
-      run("setHorseArchived", [horse.id, !horse.archived], { key: `horse-archive:${horse.id}` }),
+      run("setHorseArchived", [horse.id, !horse.archived], {
+        key: `horse-archive:${horse.id}`,
+        // Back in work: lists of horses in work (the visit sheets, Due) add it from this.
+        meta: { id: horse.id, name: horse.name, color: horse.color },
+      }),
       horse.archived ? `${horse.name} is back in work` : `${horse.name} archived`,
     );
   }
 
   function remove() {
+    const entries = `${horse.entryCount} logged ${horse.entryCount === 1 ? "entry" : "entries"}`;
+    const visits = `${horse.visitCount} ${horse.visitCount === 1 ? "visit" : "visits"}`;
     const what =
-      horse.entryCount > 0
-        ? `Delete ${horse.name} and all ${horse.entryCount} logged ${horse.entryCount === 1 ? "entry" : "entries"}? This can’t be undone.`
-        : `Delete ${horse.name}?`;
+      horse.entryCount > 0 && horse.visitCount > 0
+        ? `Delete ${horse.name}, all ${entries} and ${visits}? This can’t be undone.`
+        : horse.entryCount > 0
+          ? `Delete ${horse.name} and all ${entries}? This can’t be undone.`
+          : horse.visitCount > 0
+            ? `Delete ${horse.name} and ${visits}? This can’t be undone.`
+            : `Delete ${horse.name}?`;
     if (!window.confirm(what)) return;
     session.end();
     setOpen(false);

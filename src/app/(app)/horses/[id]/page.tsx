@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
+import { HorseAppointments } from "@/components/appointments/horse-appointments";
 import { EntryLog } from "@/components/entry-log";
 import { EditHorseButton } from "@/components/horses/horse-sheets";
 import { PageHeader } from "@/components/page-header";
@@ -11,7 +12,11 @@ import { ActivityChip, Card, cx, SectionTitle, Skeleton } from "@/components/ui"
 import { requireUserId } from "@/lib/auth";
 import {
   countHorseEntries,
+  countHorseOnlyAppointments,
+  getActiveHorses,
   getActivityTypes,
+  getAppointmentBook,
+  getAppointmentTypes,
   getHorse,
   getHorseHistory,
   getHorseStats,
@@ -47,13 +52,18 @@ async function HorseDetail({
   if (!isUUID(id)) notFound();
 
   const shown = Math.min(Math.max(Number(query.show) || PAGE, PAGE), MAX_SHOWN);
-  const [horse, stats, history, activities, entryCount] = await Promise.all([
-    getHorse(userId, id),
-    getHorseStats(userId, id, today),
-    getHorseHistory(userId, id, shown),
-    getActivityTypes(userId),
-    countHorseEntries(userId, id),
-  ]);
+  const [horse, stats, history, activities, entryCount, appointments, appointmentTypes, horses, visitCount] =
+    await Promise.all([
+      getHorse(userId, id),
+      getHorseStats(userId, id, today),
+      getHorseHistory(userId, id, shown),
+      getActivityTypes(userId),
+      countHorseEntries(userId, id),
+      getAppointmentBook(userId, today, { horseId: id }),
+      getAppointmentTypes(userId),
+      getActiveHorses(userId),
+      countHorseOnlyAppointments(userId, id),
+    ]);
   if (!horse) notFound();
 
   const activityById = new Map(activities.map((a) => [a.id, a]));
@@ -75,6 +85,7 @@ async function HorseDetail({
               notes: horse.notes,
               archived: horse.archivedAt !== null,
               entryCount,
+              visitCount,
             }}
           />
         }
@@ -95,6 +106,15 @@ async function HorseDetail({
             <Card className="px-4 py-3 text-[15px] leading-relaxed whitespace-pre-line">{horse.notes}</Card>
           </section>
         )}
+
+        <HorseAppointments
+          horse={{ id: horse.id, name: horse.name, color: horse.color, archived: horse.archivedAt !== null }}
+          appointments={appointments}
+          types={appointmentTypes}
+          horses={horses}
+          today={today}
+          locale={locale}
+        />
 
         <section>
           <SectionTitle>Last 6 weeks</SectionTitle>
